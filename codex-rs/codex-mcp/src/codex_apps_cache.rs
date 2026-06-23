@@ -1,10 +1,9 @@
 //! Shared raw tool cache for the host-owned Codex Apps MCP server.
 //!
-//! Cache entries are process-local live state scoped by the actual Codex Apps
-//! catalog principal and catalog source. Disk is best-effort cold-start
-//! persistence; entries do not reread disk after creation.
+//! Cache entries are process-local live state scoped by the active Codex auth
+//! key. Disk is best-effort cold-start persistence; entries do not reread disk
+//! after creation.
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,13 +15,10 @@ use std::time::Instant;
 
 use anyhow::Context;
 use arc_swap::ArcSwapOption;
-use codex_config::McpServerConfig;
 use codex_login::CodexAuth;
 use codex_protocol::mcp::McpServerInfo;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value as JsonValue;
-use serde_json::json;
 use sha1::Digest;
 use sha1::Sha1;
 
@@ -35,9 +31,8 @@ const MCP_TOOLS_CACHE_PUBLISH_DURATION_METRIC: &str = "codex.mcp.tools.cache_pub
 
 /// The CodexAuth bits that identify a Codex Apps catalog.
 ///
-/// This is enough for the normal CodexAuth-backed path. If
-/// `CODEX_CONNECTORS_TOKEN` is set, Codex Apps uses that bearer token instead,
-/// so the full cache identity uses the token's fingerprint instead.
+/// Debug bearer-token overrides bypass the shared cache, so shared entries only
+/// need the CodexAuth-backed identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CodexAppsToolsCacheKey {
     pub(crate) account_id: Option<String>,
@@ -45,10 +40,7 @@ pub struct CodexAppsToolsCacheKey {
     pub(crate) is_workspace_account: bool,
 }
 
-/// Builds the CodexAuth-backed part of the Codex Apps cache key.
-///
-/// We cannot decide the env-token-backed case here because the per-server env
-/// var has not been resolved yet.
+/// Builds the CodexAuth-backed Codex Apps cache key.
 pub fn codex_apps_tools_cache_key(auth: Option<&CodexAuth>) -> CodexAppsToolsCacheKey {
     CodexAppsToolsCacheKey {
         account_id: auth.and_then(CodexAuth::get_account_id),
@@ -68,7 +60,7 @@ pub struct CodexAppsToolsCache {
 
 /// Handle to one shared Codex Apps tools cache entry.
 ///
-/// The connection manager creates this from the catalog identity, then tool
+/// The connection manager creates this from the auth key, then tool
 /// reads and refreshes for that managed client use the same entry.
 #[derive(Clone)]
 pub(crate) struct CodexAppsToolsCacheContext {
@@ -154,13 +146,8 @@ impl CodexAppsToolsCache {
         &self,
         codex_home: PathBuf,
         auth_key: CodexAppsToolsCacheKey,
-        config: &McpServerConfig,
-        resolved_bearer_token: Option<&str>,
     ) -> CodexAppsToolsCacheContext {
-        // Build the cache entry from the credential the request will actually
-        // use. Normal Codex Apps uses CodexAuth; an env bearer token overrides it.
-        let identity =
-            CodexAppsToolsCacheIdentity::new(codex_home, auth_key, config, resolved_bearer_token);
+        let identity = CodexAppsToolsCacheIdentity::new(codex_home, auth_key);
         let mut entries = lock_unpoisoned(&self.entries);
         let entry = entries
             .entry(identity.clone())
@@ -175,15 +162,7 @@ impl CodexAppsToolsCache {
         codex_home: PathBuf,
         auth_key: CodexAppsToolsCacheKey,
     ) -> CodexAppsToolsCacheContext {
-        self.context(
-            codex_home,
-            auth_key,
-            &crate::codex_apps_mcp_server_config(
-                "https://chatgpt.com",
-                /*apps_mcp_product_sku*/ None,
-            ),
-            /*resolved_bearer_token*/ None,
-        )
+        self.context(codex_home, auth_key)
     }
 }
 
@@ -228,88 +207,31 @@ impl CodexAppsToolsCacheEntry {
 
 /// Everything that decides whether two Codex Apps clients can share tools.
 ///
-/// The principal says whose catalog we are reading. The source fingerprint
-/// says which Codex Apps endpoint/config we are reading from. `codex_home`
-/// keeps the persisted cache under the right home directory.
+/// The auth key says whose catalog we are reading. `codex_home` keeps the
+/// persisted cache under the right home directory.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CodexAppsToolsCacheIdentity {
     codex_home: PathBuf,
-    catalog_principal: CodexAppsCatalogPrincipal,
-    catalog_source_fingerprint: String,
+    auth_key: CodexAppsToolsCacheKey,
 }
 
 impl CodexAppsToolsCacheIdentity {
-    fn new(
-        codex_home: PathBuf,
-        auth_key: CodexAppsToolsCacheKey,
-        config: &McpServerConfig,
-        resolved_bearer_token: Option<&str>,
-    ) -> Self {
-        let catalog_principal = match resolved_bearer_token {
-            Some(token) => {
-                // For built-in Codex Apps this is the resolved
-                // `CODEX_CONNECTORS_TOKEN` override. That token, not CodexAuth,
-                // decides which catalog MCP returns, so it has to split the cache.
-                // Store only a fingerprint; never put the raw token in cache state
-                // or disk paths.
-                CodexAppsCatalogPrincipal::EnvBearerTokenFingerprint(sha1_hex(token))
-            }
-            None => CodexAppsCatalogPrincipal::CodexAuth(auth_key),
-        };
+    fn new(codex_home: PathBuf, auth_key: CodexAppsToolsCacheKey) -> Self {
         Self {
             codex_home,
-            catalog_principal,
-            catalog_source_fingerprint: codex_apps_catalog_source_fingerprint(config),
+            auth_key,
         }
     }
 
     fn cache_path_in(&self, cache_dir: &str) -> PathBuf {
         // `codex_home` is already the parent directory. Keep it out of the
-        // filename hash so non-UTF-8 Unix paths cannot collapse distinct
-        // catalog identities onto the same disk cache file.
-        let identity_json =
-            serde_json::to_string(&(&self.catalog_principal, &self.catalog_source_fingerprint))
-                .unwrap_or_default();
+        // filename hash so non-UTF-8 Unix paths cannot collapse distinct auth
+        // keys onto the same disk cache file.
+        let identity_json = serde_json::to_string(&self.auth_key).unwrap_or_default();
         let identity_hash = sha1_hex(&identity_json);
         self.codex_home
             .join(cache_dir)
             .join(format!("{identity_hash}.json"))
-    }
-}
-
-/// The credential-derived piece of the Codex Apps cache key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-enum CodexAppsCatalogPrincipal {
-    /// Normal Codex Apps path: the active CodexAuth account/user/workspace.
-    CodexAuth(CodexAppsToolsCacheKey),
-    /// Env-token-backed path: the resolved bearer token selects the catalog.
-    EnvBearerTokenFingerprint(String),
-}
-
-fn codex_apps_catalog_source_fingerprint(config: &McpServerConfig) -> String {
-    // Header maps can serialize in different orders. Normalize first so the
-    // same config still lands in the same cache entry.
-    let source = canonical_json(json!({
-        "environment_id": &config.environment_id,
-        "transport": &config.transport,
-    }));
-    sha1_hex(&serde_json::to_string(&source).unwrap_or_default())
-}
-
-fn canonical_json(value: JsonValue) -> JsonValue {
-    match value {
-        JsonValue::Array(values) => {
-            JsonValue::Array(values.into_iter().map(canonical_json).collect())
-        }
-        JsonValue::Object(values) => JsonValue::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, canonical_json(value)))
-                .collect::<BTreeMap<_, _>>()
-                .into_iter()
-                .collect(),
-        ),
-        value => value,
     }
 }
 

@@ -969,51 +969,7 @@ fn codex_apps_tools_cache_keeps_live_publish_when_disk_persistence_fails() {
 }
 
 #[test]
-fn codex_apps_tools_cache_scopes_env_token_principals_without_leaking_tokens() {
-    let codex_home = tempdir().expect("tempdir");
-    let cache = CodexAppsToolsCache::default();
-    let config = crate::codex_apps_mcp_server_config(
-        "https://chatgpt.com",
-        /*apps_mcp_product_sku*/ None,
-    );
-    let auth_key = CodexAppsToolsCacheKey {
-        account_id: Some("account-one".to_string()),
-        chatgpt_user_id: Some("user-one".to_string()),
-        is_workspace_account: false,
-    };
-    let token_one = "token-one";
-    let token_two = "token-two";
-    let token_one_context = cache.context(
-        codex_home.path().to_path_buf(),
-        auth_key.clone(),
-        &config,
-        Some(token_one),
-    );
-    let token_two_context = cache.context(
-        codex_home.path().to_path_buf(),
-        auth_key,
-        &config,
-        Some(token_two),
-    );
-
-    assert_ne!(
-        token_one_context.tools_cache_path(),
-        token_two_context.tools_cache_path()
-    );
-    let token_one_path = token_one_context
-        .tools_cache_path()
-        .to_string_lossy()
-        .into_owned();
-    let token_two_path = token_two_context
-        .tools_cache_path()
-        .to_string_lossy()
-        .into_owned();
-    assert!(!token_one_path.contains(token_one));
-    assert!(!token_two_path.contains(token_two));
-}
-
-#[test]
-fn codex_apps_tools_cache_scopes_catalog_sources() {
+fn codex_apps_env_bearer_token_bypasses_shared_tools_cache() {
     let codex_home = tempdir().expect("tempdir");
     let cache = CodexAppsToolsCache::default();
     let auth_key = CodexAppsToolsCacheKey {
@@ -1021,26 +977,15 @@ fn codex_apps_tools_cache_scopes_catalog_sources() {
         chatgpt_user_id: Some("user-one".to_string()),
         is_workspace_account: false,
     };
-    let default_context = cache.context(
-        codex_home.path().to_path_buf(),
-        auth_key.clone(),
-        &crate::codex_apps_mcp_server_config(
-            "https://chatgpt.com",
-            /*apps_mcp_product_sku*/ None,
-        ),
-        /*resolved_bearer_token*/ None,
-    );
-    let sku_context = cache.context(
-        codex_home.path().to_path_buf(),
-        auth_key,
-        &crate::codex_apps_mcp_server_config("https://chatgpt.com", Some("sku")),
-        /*resolved_bearer_token*/ None,
+    let cache_context = shared_codex_apps_tools_cache_context(
+        CODEX_APPS_MCP_SERVER_NAME,
+        /*uses_env_bearer_token*/ true,
+        &cache,
+        codex_home.path(),
+        &auth_key,
     );
 
-    assert_ne!(
-        default_context.tools_cache_path(),
-        sku_context.tools_cache_path()
-    );
+    assert!(cache_context.is_none());
 }
 
 #[cfg(unix)]
@@ -1050,10 +995,6 @@ fn codex_apps_tools_cache_scopes_non_utf8_home_disk_paths() {
         b"/tmp/codex-home-\xff".to_vec(),
     ));
     let cache = CodexAppsToolsCache::default();
-    let config = crate::codex_apps_mcp_server_config(
-        "https://chatgpt.com",
-        /*apps_mcp_product_sku*/ None,
-    );
     let user_one_context = cache.context(
         codex_home.clone(),
         CodexAppsToolsCacheKey {
@@ -1061,44 +1002,18 @@ fn codex_apps_tools_cache_scopes_non_utf8_home_disk_paths() {
             chatgpt_user_id: Some("user-one".to_string()),
             is_workspace_account: false,
         },
-        &config,
-        /*resolved_bearer_token*/ None,
     );
     let user_two_context = cache.context(
-        codex_home.clone(),
+        codex_home,
         CodexAppsToolsCacheKey {
             account_id: Some("account-two".to_string()),
             chatgpt_user_id: Some("user-two".to_string()),
             is_workspace_account: false,
         },
-        &config,
-        /*resolved_bearer_token*/ None,
-    );
-    let token_context = cache.context(
-        codex_home.clone(),
-        CodexAppsToolsCacheKey {
-            account_id: Some("account-one".to_string()),
-            chatgpt_user_id: Some("user-one".to_string()),
-            is_workspace_account: false,
-        },
-        &config,
-        Some("token-one"),
-    );
-    let sku_context = cache.context(
-        codex_home,
-        CodexAppsToolsCacheKey {
-            account_id: Some("account-one".to_string()),
-            chatgpt_user_id: Some("user-one".to_string()),
-            is_workspace_account: false,
-        },
-        &crate::codex_apps_mcp_server_config("https://chatgpt.com", Some("sku")),
-        /*resolved_bearer_token*/ None,
     );
     let cache_paths = [
         user_one_context.tools_cache_path(),
         user_two_context.tools_cache_path(),
-        token_context.tools_cache_path(),
-        sku_context.tools_cache_path(),
     ];
 
     assert_eq!(

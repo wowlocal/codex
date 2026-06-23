@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,6 +17,7 @@ use std::time::Instant;
 
 use crate::McpAuthStatusEntry;
 use crate::codex_apps_cache::CodexAppsToolsCache;
+use crate::codex_apps_cache::CodexAppsToolsCacheContext;
 use crate::codex_apps_cache::CodexAppsToolsCacheKey;
 use crate::codex_apps_cache::CodexAppsToolsFetchSource;
 use crate::elicitation::ElicitationRequestManager;
@@ -174,9 +176,9 @@ impl McpConnectionManager {
             )
             .await;
             let configured_config = server.configured_config();
-            // Resolve once, then use the same credential for the cache key and
-            // the MCP client. For built-in Codex Apps, `CODEX_CONNECTORS_TOKEN`
-            // overrides CodexAuth and decides which catalog MCP returns.
+            // Resolve once before constructing the MCP client. For built-in
+            // Codex Apps, `CODEX_CONNECTORS_TOKEN` is a debug override: it
+            // supplies runtime auth but bypasses the shared tools cache.
             let resolved_bearer_token = match configured_config.map(|config| &config.transport) {
                 Some(McpServerTransportConfig::StreamableHttp {
                     bearer_token_env_var,
@@ -185,37 +187,21 @@ impl McpConnectionManager {
                 Some(McpServerTransportConfig::Stdio { .. }) | None => Ok(None),
             }
             .map_err(Into::into);
-            let (uses_env_bearer_token, has_env_http_headers) =
-                configured_config.map_or((false, false), |config| match &config.transport {
+            let uses_env_bearer_token =
+                configured_config.is_some_and(|config| match &config.transport {
                     McpServerTransportConfig::StreamableHttp {
                         bearer_token_env_var,
-                        env_http_headers,
                         ..
-                    } => (
-                        bearer_token_env_var.is_some(),
-                        env_http_headers
-                            .as_ref()
-                            .is_some_and(|headers| !headers.is_empty()),
-                    ),
-                    McpServerTransportConfig::Stdio { .. } => (false, false),
+                    } => bearer_token_env_var.is_some(),
+                    McpServerTransportConfig::Stdio { .. } => false,
                 });
-            // rmcp-client resolves `env_http_headers` later, right before it
-            // sends requests. If a Codex Apps config uses them, do not share a
-            // cache entry keyed only by the env var names.
-            let codex_apps_tools_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
-                && !has_env_http_headers
-                && let (Ok(resolved_bearer_token), Some(configured_config)) =
-                    (resolved_bearer_token.as_ref(), configured_config)
-            {
-                Some(codex_apps_tools_cache.context(
-                    codex_home.clone(),
-                    codex_apps_tools_cache_key.clone(),
-                    configured_config,
-                    resolved_bearer_token.as_deref(),
-                ))
-            } else {
-                None
-            };
+            let codex_apps_tools_cache_context = shared_codex_apps_tools_cache_context(
+                &server_name,
+                uses_env_bearer_token,
+                &codex_apps_tools_cache,
+                &codex_home,
+                &codex_apps_tools_cache_key,
+            );
             // If Codex Apps has an env bearer token, that is its auth path. Do
             // not also attach the ambient CodexAuth provider.
             let runtime_auth_provider =
@@ -527,9 +513,9 @@ impl McpConnectionManager {
 
     /// Force-refresh codex apps tools by bypassing the in-process cache.
     ///
-    /// On success, the refreshed tools replace the cache contents and the
-    /// latest filtered tools are returned directly to the caller. On
-    /// failure, the existing cache remains unchanged.
+    /// On success, the refreshed tools replace shared cache contents when the
+    /// cache is enabled and the latest filtered tools are returned directly to
+    /// the caller. On failure, existing shared cache contents remain unchanged.
     pub async fn hard_refresh_codex_apps_tools_cache(&self) -> Result<Vec<ToolInfo>> {
         let managed_client = self
             .clients
@@ -927,6 +913,18 @@ fn resolve_bearer_token(
             "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
         )),
     }
+}
+
+fn shared_codex_apps_tools_cache_context(
+    server_name: &str,
+    uses_env_bearer_token: bool,
+    codex_apps_tools_cache: &CodexAppsToolsCache,
+    codex_home: &Path,
+    codex_apps_tools_cache_key: &CodexAppsToolsCacheKey,
+) -> Option<CodexAppsToolsCacheContext> {
+    (server_name == CODEX_APPS_MCP_SERVER_NAME && !uses_env_bearer_token).then(|| {
+        codex_apps_tools_cache.context(codex_home.to_path_buf(), codex_apps_tools_cache_key.clone())
+    })
 }
 
 async fn emit_update(
