@@ -1,5 +1,6 @@
 use crate::ConfigRequirementsToml;
 use crate::ManagedHooksRequirementsToml;
+use crate::MarketplaceRequirementsToml;
 use crate::RequirementSource;
 use crate::RequirementsExecPolicyToml;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -87,6 +88,7 @@ impl ComposableRequirementsLayer {
                 rules: requirements.rules,
                 hooks: requirements.hooks,
                 permissions: requirements.permissions,
+                marketplaces: requirements.marketplaces,
             },
         })
     }
@@ -97,6 +99,7 @@ pub(super) struct DomainMergedRequirementsFields {
     pub(super) rules: Option<RequirementsExecPolicyToml>,
     pub(super) hooks: Option<ManagedHooksRequirementsToml>,
     pub(super) permissions: Option<crate::config_requirements::PermissionsRequirementsToml>,
+    pub(super) marketplaces: Option<MarketplaceRequirementsToml>,
 }
 
 fn parse_layer_toml(
@@ -169,6 +172,7 @@ fn toml_value_from_serializable<T: serde::Serialize>(
 fn strip_special_fields(layer_toml: &mut TomlValue) {
     remove_top_level_field(layer_toml, "rules");
     remove_top_level_field(layer_toml, "hooks");
+    remove_top_level_field(layer_toml, "marketplaces");
     remove_nested_field_and_prune_empty(layer_toml, &["permissions", "filesystem", "deny_read"]);
 }
 

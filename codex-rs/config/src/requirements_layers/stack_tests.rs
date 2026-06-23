@@ -6,6 +6,8 @@ use super::compose_requirements_for_hostname_and_hook_directory;
 use super::compose_requirements_with_hostname_resolver;
 use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
+use crate::MarketplaceAllowedSourceToml;
+use crate::MarketplaceRequirementsToml;
 use crate::RequirementSource;
 use crate::Sourced;
 use codex_protocol::protocol::AskForApproval;
@@ -13,6 +15,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use tempfile::TempDir;
 
 fn layer(id: &str, name: &str, contents: &str) -> RequirementsLayerEntry {
     RequirementsLayerEntry::from_toml(
@@ -1025,4 +1028,232 @@ fn parse_error_names_layer() {
 
     assert!(err.to_string().contains("Bad layer (req_bad)"));
     assert!(err.to_string().contains("allowed_approval_policies"));
+}
+
+#[test]
+fn marketplace_allowed_sources_merge_by_key_with_atomic_replacement() {
+    let composed = compose(vec![
+        layer(
+            "req_low",
+            "Low",
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+
+[marketplaces.allowed_sources.shared]
+source = "git"
+url = "https://github.com/example/old.git"
+ref = "main"
+
+[marketplaces.allowed_sources.other]
+source = "git"
+url = "https://github.com/example/other.git"
+"#,
+        ),
+        layer(
+            "req_high",
+            "High",
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = false
+
+[marketplaces.allowed_sources.shared]
+source = "host_pattern"
+host_pattern = '^github\.example\.com$'
+"#,
+        ),
+    ])
+    .expect("compose requirements")
+    .expect("requirements present");
+
+    assert_eq!(
+        composed,
+        expected_requirements(
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = false
+
+[marketplaces.allowed_sources.shared]
+source = "host_pattern"
+host_pattern = '^github\.example\.com$'
+
+[marketplaces.allowed_sources.other]
+source = "git"
+url = "https://github.com/example/other.git"
+"#,
+        )
+    );
+}
+
+#[test]
+fn marketplace_rule_layer_without_flag_keeps_lower_restriction() {
+    let low_toml = r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+"#;
+    let high_toml = r#"
+[marketplaces.allowed_sources.company]
+source = "git"
+url = "https://github.com/example/plugins.git"
+"#;
+    let composed = compose(vec![
+        layer("req_low", "Low", low_toml),
+        layer("req_high", "High", high_toml),
+    ])
+    .expect("compose requirements")
+    .expect("requirements present");
+    let expected = MarketplaceRequirementsToml {
+        restrict_to_allowed_sources: Some(true),
+        allowed_sources: BTreeMap::from([(
+            "company".to_string(),
+            MarketplaceAllowedSourceToml::GitUrl {
+                url: "https://github.com/example/plugins.git".to_string(),
+                ref_name: None,
+            },
+        )]),
+    };
+    assert_eq!(composed.marketplaces, Some(expected.clone()));
+
+    let mut merged = ConfigRequirementsWithSources::default();
+    merged.merge_unset_fields(
+        RequirementSource::Unknown,
+        toml::from_str(high_toml).expect("parse high-priority requirements"),
+    );
+    merged.merge_unset_fields(
+        RequirementSource::Unknown,
+        toml::from_str(low_toml).expect("parse low-priority requirements"),
+    );
+    assert_eq!(merged.into_toml().marketplaces, Some(expected));
+}
+
+#[test]
+fn invalid_marketplace_allowed_source_names_layer() {
+    let err = compose(vec![layer(
+        "req_bad",
+        "Bad marketplace layer",
+        r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+
+[marketplaces.allowed_sources.invalid]
+source = "host_pattern"
+host_pattern = ".*"
+url = "https://github.com/example/plugins.git"
+"#,
+    )])
+    .expect_err("invalid marketplace rule should fail");
+
+    assert!(err.to_string().contains("Bad marketplace layer (req_bad)"));
+    assert!(err.to_string().contains("unknown field `url`"));
+}
+
+#[test]
+fn empty_local_marketplace_path_is_rejected_before_base_dir_resolution() {
+    let base_dir = TempDir::new().expect("create requirements base directory");
+    let base_dir = AbsolutePathBuf::try_from(base_dir.path().to_path_buf())
+        .expect("absolute requirements base directory");
+    let err = compose(vec![
+        layer(
+            "req_bad",
+            "Empty local marketplace path",
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+
+[marketplaces.allowed_sources.local]
+source = "local"
+path = ""
+"#,
+        )
+        .with_base_dir(base_dir),
+    ])
+    .expect_err("empty local marketplace path should fail");
+
+    assert!(
+        err.to_string()
+            .contains("local marketplace path must not be empty")
+    );
+}
+
+#[test]
+fn merge_unset_fields_merges_marketplace_rules_by_key() {
+    let high: ConfigRequirementsToml = toml::from_str(
+        r#"
+[marketplaces]
+restrict_to_allowed_sources = false
+
+[marketplaces.allowed_sources.shared]
+source = "host_pattern"
+host_pattern = '^git\.example\.com$'
+"#,
+    )
+    .expect("parse high-priority requirements");
+    let low: ConfigRequirementsToml = toml::from_str(
+        r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+
+[marketplaces.allowed_sources.shared]
+source = "git"
+url = "https://github.com/example/old.git"
+
+[marketplaces.allowed_sources.other]
+source = "git"
+url = "https://github.com/example/other.git"
+"#,
+    )
+    .expect("parse low-priority requirements");
+    let mut merged = ConfigRequirementsWithSources::default();
+    merged.merge_unset_fields(RequirementSource::Unknown, high);
+    merged.merge_unset_fields(RequirementSource::Unknown, low);
+
+    assert_eq!(
+        merged.into_toml(),
+        expected_requirements(
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = false
+
+[marketplaces.allowed_sources.shared]
+source = "host_pattern"
+host_pattern = '^git\.example\.com$'
+
+[marketplaces.allowed_sources.other]
+source = "git"
+url = "https://github.com/example/other.git"
+"#,
+        )
+    );
+}
+
+#[test]
+fn merge_unset_fields_ignores_empty_marketplace_source() {
+    let high_source = RequirementSource::EnterpriseManaged {
+        id: "high".to_string(),
+        name: "High".to_string(),
+    };
+    let low_source = RequirementSource::EnterpriseManaged {
+        id: "low".to_string(),
+        name: "Low".to_string(),
+    };
+    let mut merged = ConfigRequirementsWithSources::default();
+    merged.merge_unset_fields(
+        high_source,
+        toml::from_str("[marketplaces]").expect("parse empty marketplace requirements"),
+    );
+    merged.merge_unset_fields(
+        low_source.clone(),
+        toml::from_str(
+            r#"
+[marketplaces]
+restrict_to_allowed_sources = true
+"#,
+        )
+        .expect("parse marketplace requirements"),
+    );
+
+    assert_eq!(
+        merged.marketplaces.expect("merged marketplaces").source,
+        low_source
+    );
 }

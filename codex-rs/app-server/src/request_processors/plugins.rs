@@ -1446,7 +1446,10 @@ impl PluginRequestProcessor {
             marketplace_path,
         };
 
-        let result = match plugins_manager.install_plugin(request).await {
+        let result = match plugins_manager
+            .install_plugin(&config.config_layer_stack, request)
+            .await
+        {
             Ok(result) => result,
             Err(err) => {
                 warn!(

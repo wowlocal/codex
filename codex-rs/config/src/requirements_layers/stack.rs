@@ -10,6 +10,8 @@
 //! - `rules.prefix_rules` append high-priority rules first.
 //! - `hooks` append high-priority event groups first while failing closed on
 //!   active managed-dir conflicts.
+//! - `marketplaces.allowed_sources` merges by rule key, replacing an entire
+//!   lower-priority rule when the same key appears at a higher priority.
 //! - `permissions.filesystem.deny_read` is a high-priority-first union across
 //!   layers.
 
@@ -17,6 +19,7 @@ use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
 use crate::RequirementSource;
 use crate::Sourced;
+use crate::config_requirements::merge_marketplace_requirements_descending;
 use crate::merge::merge_toml_values;
 use std::cell::OnceCell;
 use std::io;
@@ -176,6 +179,13 @@ impl RequirementsLayerStack {
                 domain_fields.hooks.clone(),
                 &layer.source,
             )?;
+            if let Some(marketplaces) = domain_fields.marketplaces.clone() {
+                merge_marketplace_requirements_descending(
+                    &mut output.marketplaces,
+                    marketplaces,
+                    layer.source.clone(),
+                );
+            }
             deny_read.merge(domain_fields.permissions.clone(), &layer.source);
         }
         output.rules = rules;
@@ -222,6 +232,7 @@ fn populate_merged_regular_fields_with_sources(
         hooks: _,
         mcp_servers,
         plugins,
+        marketplaces: _,
         apps,
         rules: _,
         enforce_residency,
