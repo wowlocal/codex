@@ -350,7 +350,7 @@ alpha = true
 }
 
 #[test]
-fn mcp_requirements_use_regular_toml_merge() {
+fn higher_priority_mcp_requirements_replace_named_rules() {
     let composed = compose(vec![
         layer(
             "req_low",
@@ -358,6 +358,9 @@ fn mcp_requirements_use_regular_toml_merge() {
             r#"
 [mcp_servers.shared.identity]
 command = "low-mcp"
+
+[mcp_servers.changed_form.identity]
+command = "legacy-proxy"
 
 [mcp_servers.low.identity]
 url = "https://low.example.com/mcp"
@@ -369,6 +372,10 @@ url = "https://low.example.com/mcp"
             r#"
 [mcp_servers.shared.identity]
 command = "high-mcp"
+
+[mcp_servers.changed_form]
+command = "company-cli"
+args = [{ match = "exact", value = "mcp" }]
 "#,
         ),
     ])
@@ -379,11 +386,84 @@ command = "high-mcp"
         composed,
         expected_requirements(
             r#"
+[mcp_servers.changed_form]
+command = "company-cli"
+args = [{ match = "exact", value = "mcp" }]
+
 [mcp_servers.low.identity]
 url = "https://low.example.com/mcp"
 
 [mcp_servers.shared.identity]
 command = "high-mcp"
+"#
+        )
+    );
+}
+
+#[test]
+fn higher_priority_identity_replaces_mcp_matcher() {
+    let composed = compose(vec![
+        layer(
+            "req_low",
+            "Low",
+            r#"
+[mcp_servers.shared]
+command = "company-cli"
+args = [{ match = "exact", value = "mcp" }]
+"#,
+        ),
+        layer(
+            "req_high",
+            "High",
+            r#"
+[mcp_servers.shared.identity]
+command = "approved-mcp"
+"#,
+        ),
+    ])
+    .expect("compose requirements")
+    .expect("requirements present");
+
+    assert_eq!(
+        composed,
+        expected_requirements(
+            r#"
+[mcp_servers.shared.identity]
+command = "approved-mcp"
+"#
+        )
+    );
+}
+
+#[test]
+fn higher_priority_plugin_mcp_requirements_replace_named_rules() {
+    let composed = compose(vec![
+        layer(
+            "req_low",
+            "Low",
+            r#"
+[plugins."sample@test".mcp_servers.shared.identity]
+command = "low-plugin-mcp"
+"#,
+        ),
+        layer(
+            "req_high",
+            "High",
+            r#"
+[plugins."sample@test".mcp_servers.shared]
+url = { match = "regex", expression = '^https://high\.example\.com/mcp$' }
+"#,
+        ),
+    ])
+    .expect("compose requirements")
+    .expect("requirements present");
+
+    assert_eq!(
+        composed,
+        expected_requirements(
+            r#"
+[plugins."sample@test".mcp_servers.shared]
+url = { match = "regex", expression = '^https://high\.example\.com/mcp$' }
 "#
         )
     );
