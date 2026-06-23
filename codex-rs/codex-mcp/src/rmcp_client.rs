@@ -9,6 +9,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -152,7 +153,6 @@ impl AsyncManagedClient {
         tool_plugin_provenance: Arc<ToolPluginProvenance>,
         runtime_context: McpRuntimeContext,
         runtime_auth_provider: Option<SharedAuthProvider>,
-        resolved_bearer_token: Result<Option<String>, StartupOutcomeError>,
         client_elicitation_capability: ElicitationCapability,
         supports_openai_form_elicitation: bool,
     ) -> Self {
@@ -161,10 +161,13 @@ impl AsyncManagedClient {
             .configured_config()
             .map(ToolFilter::from_config)
             .unwrap_or_default();
-        let cached_server_info = load_startup_cached_codex_apps_server_info(
-            &server_name,
-            codex_apps_tools_cache_context.as_ref(),
-        );
+        let cached_server_info = if is_codex_apps_mcp_server {
+            codex_apps_tools_cache_context
+                .as_ref()
+                .and_then(load_startup_cached_codex_apps_server_info)
+        } else {
+            None
+        };
         let startup_tool_filter = tool_filter.clone();
         let codex_apps_tools_cache_context_for_fut = codex_apps_tools_cache_context.clone();
         let startup_complete = Arc::new(AtomicBool::new(false));
@@ -184,7 +187,6 @@ impl AsyncManagedClient {
                         keyring_backend_kind,
                         runtime_context,
                         runtime_auth_provider,
-                        resolved_bearer_token?,
                     )
                     .await?,
                 );
@@ -495,6 +497,33 @@ fn is_untrusted_connector_meta_key(key: &str) -> bool {
     UNTRUSTED_CONNECTOR_META_KEYS.contains(&key)
 }
 
+fn resolve_bearer_token(
+    server_name: &str,
+    bearer_token_env_var: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(env_var) = bearer_token_env_var else {
+        return Ok(None);
+    };
+
+    match env::var(env_var) {
+        Ok(value) => {
+            if value.is_empty() {
+                Err(anyhow!(
+                    "Environment variable {env_var} for MCP server '{server_name}' is empty"
+                ))
+            } else {
+                Ok(Some(value))
+            }
+        }
+        Err(env::VarError::NotPresent) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' is not set"
+        )),
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
+        )),
+    }
+}
+
 fn validate_mcp_server_name(server_name: &str) -> Result<()> {
     let re = regex_lite::Regex::new(r"^[a-zA-Z0-9_-]+$")?;
     if !re.is_match(server_name) {
@@ -644,7 +673,6 @@ async fn make_rmcp_client(
     keyring_backend_kind: AuthKeyringBackendKind,
     runtime_context: McpRuntimeContext,
     runtime_auth_provider: Option<SharedAuthProvider>,
-    resolved_bearer_token: Option<String>,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = match server.launch() {
         McpServerLaunch::Configured(config) => config.as_ref().clone(),
@@ -697,12 +725,17 @@ async fn make_rmcp_client(
             url,
             http_headers,
             env_http_headers,
-            bearer_token_env_var: _,
+            bearer_token_env_var,
         } => {
             let http_client = resolved_environment.as_ref().map_or_else(
                 || Arc::new(ReqwestHttpClient) as Arc<dyn HttpClient>,
                 |environment| environment.get_http_client(),
             );
+            let resolved_bearer_token =
+                match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
+                    Ok(token) => token,
+                    Err(error) => return Err(error.into()),
+                };
             RmcpClient::new_streamable_http_client(
                 server_name,
                 &url,

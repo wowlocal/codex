@@ -22,7 +22,6 @@ use serde::Serialize;
 use sha1::Digest;
 use sha1::Sha1;
 
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::runtime::emit_duration;
 use crate::tools::MCP_TOOLS_CACHE_WRITE_DURATION_METRIC;
 use crate::tools::ToolInfo;
@@ -147,22 +146,16 @@ impl CodexAppsToolsCache {
         codex_home: PathBuf,
         auth_key: CodexAppsToolsCacheKey,
     ) -> CodexAppsToolsCacheContext {
-        let identity = CodexAppsToolsCacheIdentity::new(codex_home, auth_key);
+        let identity = CodexAppsToolsCacheIdentity {
+            codex_home,
+            auth_key,
+        };
         let mut entries = lock_unpoisoned(&self.entries);
         let entry = entries
             .entry(identity.clone())
             .or_insert_with(|| Arc::new(CodexAppsToolsCacheEntry::new(identity)))
             .clone();
         CodexAppsToolsCacheContext { entry }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn context_for_test(
-        &self,
-        codex_home: PathBuf,
-        auth_key: CodexAppsToolsCacheKey,
-    ) -> CodexAppsToolsCacheContext {
-        self.context(codex_home, auth_key)
     }
 }
 
@@ -216,13 +209,6 @@ struct CodexAppsToolsCacheIdentity {
 }
 
 impl CodexAppsToolsCacheIdentity {
-    fn new(codex_home: PathBuf, auth_key: CodexAppsToolsCacheKey) -> Self {
-        Self {
-            codex_home,
-            auth_key,
-        }
-    }
-
     fn cache_path_in(&self, cache_dir: &str) -> PathBuf {
         // `codex_home` is already the parent directory. Keep it out of the
         // filename hash so non-UTF-8 Unix paths cannot collapse distinct auth
@@ -236,7 +222,7 @@ impl CodexAppsToolsCacheIdentity {
 }
 
 #[cfg(test)]
-pub(crate) fn write_cached_codex_apps_tools_for_test(
+fn write_cached_codex_apps_tools_for_test(
     cache_context: &CodexAppsToolsCacheContext,
     server_info: &McpServerInfo,
     tools: &[ToolInfo],
@@ -249,18 +235,13 @@ pub(crate) fn write_cached_codex_apps_tools_for_test(
 }
 
 pub(crate) fn load_startup_cached_codex_apps_server_info(
-    server_name: &str,
-    cache_context: Option<&CodexAppsToolsCacheContext>,
+    cache_context: &CodexAppsToolsCacheContext,
 ) -> Option<McpServerInfo> {
-    if server_name != CODEX_APPS_MCP_SERVER_NAME {
-        return None;
-    }
-
-    load_cached_codex_apps_server_info(cache_context?)
+    load_cached_codex_apps_server_info(cache_context)
 }
 
 #[cfg(test)]
-pub(crate) fn read_cached_codex_apps_tools(
+fn read_cached_codex_apps_tools(
     cache_context: &CodexAppsToolsCacheContext,
 ) -> Option<Vec<ToolInfo>> {
     load_cached_codex_apps_tools_for_identity(&cache_context.entry.identity)
@@ -275,7 +256,7 @@ fn load_cached_codex_apps_tools_for_identity(
     (cache.schema_version == CODEX_APPS_TOOLS_CACHE_SCHEMA_VERSION).then_some(cache.tools)
 }
 
-pub(crate) fn write_cached_codex_apps_tools(
+fn write_cached_codex_apps_tools(
     cache_context: &CodexAppsToolsCacheContext,
     tools: &[ToolInfo],
 ) -> anyhow::Result<()> {
@@ -371,7 +352,7 @@ struct CodexAppsServerInfoDiskCache {
 }
 
 const CODEX_APPS_TOOLS_CACHE_DIR: &str = "cache/codex_apps_tools";
-pub(crate) const CODEX_APPS_TOOLS_CACHE_SCHEMA_VERSION: u8 = 4;
+const CODEX_APPS_TOOLS_CACHE_SCHEMA_VERSION: u8 = 4;
 
 const CODEX_APPS_SERVER_INFO_CACHE_DIR: &str = "cache/codex_apps_server_info";
 const CODEX_APPS_SERVER_INFO_CACHE_SCHEMA_VERSION: u8 = 1;
@@ -388,3 +369,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+#[cfg(test)]
+#[path = "codex_apps_cache_tests.rs"]
+mod tests;
