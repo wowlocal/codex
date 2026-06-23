@@ -1998,7 +1998,7 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created => {}
-            ResponseEvent::OutputItemDone(item) => {
+            ResponseEvent::OutputItemDone { item, .. } => {
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
                     && let Ok(Some(event)) = consumer.finish()
                 {
@@ -2304,7 +2304,7 @@ async fn try_run_sampling_request(
                 if uses_concurrent_reasoning_summaries {
                     continue;
                 }
-                if let Some(active) = active_items.get(None) {
+                if let Some(active) = active_items.get(/*response_item_id*/ None) {
                     if !active.streams_to_client {
                         continue;
                     }
@@ -2367,7 +2367,7 @@ async fn try_run_sampling_request(
                 if uses_concurrent_reasoning_summaries {
                     continue;
                 }
-                if let Some(active) = active_items.get(None) {
+                if let Some(active) = active_items.get(/*response_item_id*/ None) {
                     if !active.streams_to_client {
                         continue;
                     }
@@ -2385,7 +2385,7 @@ async fn try_run_sampling_request(
                 delta,
                 content_index,
             } => {
-                if let Some(active) = active_items.get(None) {
+                if let Some(active) = active_items.get(/*response_item_id*/ None) {
                     if !active.streams_to_client {
                         continue;
                     }
