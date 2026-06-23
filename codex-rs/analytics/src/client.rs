@@ -16,6 +16,8 @@ use crate::facts::ExternalAgentConfigImportFailureInput;
 use crate::facts::HookRunFact;
 use crate::facts::HookRunInput;
 use crate::facts::PluginInstallFailedInput;
+use crate::facts::PluginInstallRequested;
+use crate::facts::PluginInstallRequestedInput;
 use crate::facts::PluginState;
 use crate::facts::PluginStateChangedInput;
 use crate::facts::SkillInvocation;
@@ -299,6 +301,19 @@ impl AnalyticsEventsClient {
         self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::PluginUsed(
             crate::facts::PluginUsedInput { tracking, plugin },
         )));
+    }
+
+    pub fn track_plugin_install_requested(
+        &self,
+        tracking: TrackEventsContext,
+        request: PluginInstallRequested,
+    ) {
+        self.record_fact(AnalyticsFact::Custom(
+            CustomAnalyticsFact::PluginInstallRequested(PluginInstallRequestedInput {
+                tracking,
+                request,
+            }),
+        ));
     }
 
     pub fn track_compaction(&self, event: crate::facts::CodexCompactionEvent) {

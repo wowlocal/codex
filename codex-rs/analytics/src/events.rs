@@ -79,6 +79,7 @@ pub(crate) enum TrackEventRequest {
     #[allow(dead_code)]
     ReviewEvent(CodexReviewEventRequest),
     PluginUsed(CodexPluginUsedEventRequest),
+    PluginInstallRequested(CodexPluginInstallRequestedEventRequest),
     PluginInstalled(CodexPluginEventRequest),
     PluginUninstalled(CodexPluginEventRequest),
     PluginEnabled(CodexPluginEventRequest),
@@ -952,6 +953,26 @@ pub(crate) struct CodexPluginUsedMetadata {
 }
 
 #[derive(Serialize)]
+pub(crate) struct CodexPluginInstallRequestedMetadata {
+    pub(crate) suggestion_id: String,
+    pub(crate) plugin_id: String,
+    pub(crate) remote_plugin_id: Option<String>,
+    pub(crate) plugin_name: String,
+    pub(crate) connector_ids: Vec<String>,
+    pub(crate) source: crate::facts::PluginInstallRequestSource,
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) model_slug: String,
+    pub(crate) product_client_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CodexPluginInstallRequestedEventRequest {
+    pub(crate) event_type: &'static str,
+    pub(crate) event_params: CodexPluginInstallRequestedMetadata,
+}
+
+#[derive(Serialize)]
 pub(crate) struct CodexPluginEventRequest {
     pub(crate) event_type: &'static str,
     pub(crate) event_params: CodexPluginMetadata,
@@ -1058,6 +1079,24 @@ pub(crate) fn codex_plugin_metadata(plugin: PluginTelemetryMetadata) -> CodexPlu
                 .map(|connector_id| connector_id.0)
                 .collect()
         }),
+        product_client_id: Some(originator().value),
+    }
+}
+
+pub(crate) fn codex_plugin_install_requested_metadata(
+    tracking: &TrackEventsContext,
+    request: crate::facts::PluginInstallRequested,
+) -> CodexPluginInstallRequestedMetadata {
+    CodexPluginInstallRequestedMetadata {
+        suggestion_id: request.suggestion_id,
+        plugin_id: request.plugin_id,
+        remote_plugin_id: request.remote_plugin_id,
+        plugin_name: request.plugin_name,
+        connector_ids: request.connector_ids,
+        source: request.source,
+        thread_id: tracking.thread_id.clone(),
+        turn_id: tracking.turn_id.clone(),
+        model_slug: tracking.model_slug.clone(),
         product_client_id: Some(originator().value),
     }
 }
