@@ -585,6 +585,7 @@ impl Session {
                             },
                             dynamic_tools: session_configuration.dynamic_tools.clone(),
                             multi_agent_version: initial_multi_agent_version,
+                            initial_timestamps: None,
                             metadata: ThreadPersistenceMetadata {
                                 cwd: Some(config.cwd.to_path_buf()),
                                 model_provider: config.model_provider_id.clone(),

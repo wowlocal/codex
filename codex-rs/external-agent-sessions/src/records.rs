@@ -27,6 +27,8 @@ pub(super) struct ParsedSessionImport {
     pub cwd: Option<PathBuf>,
     pub source_title: Option<String>,
     pub messages: Vec<ConversationMessage>,
+    pub created_at: Option<i64>,
+    pub last_active_at: Option<i64>,
     pub content_sha256: String,
 }
 
@@ -80,11 +82,8 @@ pub fn summarize_session(path: &Path) -> io::Result<Option<SessionSummary>> {
     if !saw_message {
         return Ok(None);
     }
-    let Some(latest_timestamp) = latest_timestamp else {
-        return Ok(None);
-    };
     Ok(Some(SessionSummary {
-        latest_timestamp,
+        latest_timestamp: latest_timestamp.unwrap_or_default(),
         migration: ExternalAgentSessionMigration {
             path: path.to_path_buf(),
             cwd,
@@ -100,6 +99,8 @@ pub(super) fn read_session_import(path: &Path) -> io::Result<ParsedSessionImport
     let mut custom_title = None;
     let mut ai_title = None;
     let mut messages = Vec::new();
+    let mut created_at = None;
+    let mut last_active_at = None;
     let mut line = String::new();
     let mut hasher = Sha256::new();
     loop {
@@ -128,6 +129,12 @@ pub(super) fn read_session_import(path: &Path) -> io::Result<ParsedSessionImport
             ai_title = Some(title.to_string());
         }
         if let Some(message) = conversation_message_from_owned_record(&mut record) {
+            if let Some(timestamp) = message.timestamp {
+                created_at =
+                    Some(created_at.map_or(timestamp, |current: i64| current.min(timestamp)));
+                last_active_at =
+                    Some(last_active_at.map_or(timestamp, |current: i64| current.max(timestamp)));
+            }
             messages.push(message);
         }
     }
@@ -135,6 +142,8 @@ pub(super) fn read_session_import(path: &Path) -> io::Result<ParsedSessionImport
         cwd,
         source_title: custom_title.or(ai_title),
         messages,
+        created_at,
+        last_active_at,
         content_sha256: format!("{:x}", hasher.finalize()),
     })
 }
@@ -380,6 +389,93 @@ mod tests {
             parsed.content_sha256,
             format!("{:x}", Sha256::digest(contents))
         );
+    }
+
+    #[test]
+    fn reads_source_timestamp_bounds_from_retained_messages() {
+        let root = TempDir::new().expect("tempdir");
+        let path = root.path().join("session.jsonl");
+        let contents = [
+            serde_json::json!({
+                "type": "user",
+                "cwd": root.path(),
+                "timestamp": "2025-03-04T05:06:07Z",
+                "message": { "content": "first request" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": root.path(),
+                "timestamp": "not-a-timestamp",
+                "message": { "content": "invalid timestamp" },
+            }),
+            serde_json::json!({
+                "type": "user",
+                "cwd": root.path(),
+                "message": { "content": "missing timestamp" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": root.path(),
+                "timestamp": "2024-01-02T03:04:05Z",
+                "message": { "content": "earliest retained message" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": root.path(),
+                "timestamp": "2026-05-06T07:08:09Z",
+                "message": { "content": "latest retained message" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": root.path(),
+                "timestamp": "2027-01-01T00:00:00Z",
+                "isMeta": true,
+                "message": { "content": "filtered metadata" },
+            }),
+        ]
+        .into_iter()
+        .map(|record| record.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        std::fs::write(&path, contents).expect("session");
+
+        let parsed = read_session_import(&path).expect("parse session");
+
+        assert_eq!(
+            (parsed.created_at, parsed.last_active_at),
+            (
+                parse_timestamp("2024-01-02T03:04:05Z"),
+                parse_timestamp("2026-05-06T07:08:09Z"),
+            )
+        );
+    }
+
+    #[test]
+    fn leaves_source_timestamp_bounds_empty_without_valid_timestamps() {
+        let root = TempDir::new().expect("tempdir");
+        let path = root.path().join("session.jsonl");
+        let contents = [
+            serde_json::json!({
+                "type": "user",
+                "cwd": root.path(),
+                "message": { "content": "missing timestamp" },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": root.path(),
+                "timestamp": "invalid",
+                "message": { "content": "invalid timestamp" },
+            }),
+        ]
+        .into_iter()
+        .map(|record| record.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        std::fs::write(&path, contents).expect("session");
+
+        let parsed = read_session_import(&path).expect("parse session");
+
+        assert_eq!((parsed.created_at, parsed.last_active_at), (None, None));
     }
 
     #[test]

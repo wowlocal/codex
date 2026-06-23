@@ -260,6 +260,37 @@ mod tests {
     }
 
     #[test]
+    fn detects_sessions_without_valid_source_timestamps() {
+        let root = TempDir::new().expect("tempdir");
+        let external_agent_home = root.path().join(".external");
+        let project_root = root.path().join("repo");
+        let session_path = write_session(
+            &external_agent_home,
+            &project_root,
+            "session.jsonl",
+            &[
+                record_at("user", "hello", &project_root, "invalid"),
+                serde_json::json!({
+                    "type": "assistant",
+                    "cwd": &project_root,
+                    "message": { "content": "missing timestamp" }
+                }),
+            ],
+        );
+
+        let sessions = detect_recent_sessions(&external_agent_home, root.path()).expect("detect");
+
+        assert_eq!(
+            sessions,
+            vec![ExternalAgentSessionMigration {
+                path: session_path,
+                cwd: project_root,
+                title: Some("hello".to_string()),
+            }]
+        );
+    }
+
+    #[test]
     fn ignores_sessions_with_old_file_modification_time() {
         let root = TempDir::new().expect("tempdir");
         let external_agent_home = root.path().join(".external");

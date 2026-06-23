@@ -41,6 +41,7 @@ pub(crate) struct ThreadMetadataSync {
     pending_update: Option<ThreadMetadataPatch>,
     pending_update_generation: u64,
     last_touch_persisted_at: Option<Instant>,
+    initial_updated_at: Option<DateTime<Utc>>,
     defer_create_update_until_history_exists: bool,
     defer_resume_update_until_append: bool,
 }
@@ -52,7 +53,14 @@ pub(crate) struct PendingThreadMetadataPatch {
 
 impl ThreadMetadataSync {
     pub(crate) async fn for_create(params: &CreateThreadParams) -> Self {
-        let created_at = Utc::now();
+        let (created_at, updated_at) = params
+            .initial_timestamps
+            .as_ref()
+            .map(|timestamps| (timestamps.created_at, timestamps.updated_at))
+            .unwrap_or_else(|| {
+                let now = Utc::now();
+                (now, now)
+            });
         let cwd = params.metadata.cwd.clone().unwrap_or_default();
         let git_info = if get_git_repo_root(cwd.as_path()).is_some() {
             collect_git_info(cwd.as_path()).await.map(|info| GitInfo {
@@ -66,7 +74,8 @@ impl ThreadMetadataSync {
         let update = ThreadMetadataPatch {
             model_provider: Some(params.metadata.model_provider.clone()),
             created_at: Some(created_at),
-            updated_at: Some(created_at),
+            updated_at: Some(updated_at),
+            advance_recency_at: Some(updated_at),
             source: Some(params.source.clone()),
             thread_source: Some(params.thread_source.clone()),
             agent_nickname: Some(params.source.get_nickname()),
@@ -87,6 +96,10 @@ impl ThreadMetadataSync {
             pending_update: Some(update),
             pending_update_generation: 1,
             last_touch_persisted_at: None,
+            initial_updated_at: params
+                .initial_timestamps
+                .as_ref()
+                .map(|timestamps| timestamps.updated_at),
             defer_create_update_until_history_exists: true,
             defer_resume_update_until_append: false,
         }
@@ -106,6 +119,7 @@ impl ThreadMetadataSync {
             pending_update: None,
             pending_update_generation: 0,
             last_touch_persisted_at: None,
+            initial_updated_at: None,
             defer_create_update_until_history_exists: false,
             defer_resume_update_until_append: false,
         };
@@ -163,13 +177,14 @@ impl ThreadMetadataSync {
         let advances_recency = items
             .iter()
             .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))));
+        let observed_at = self.initial_updated_at.take().unwrap_or_else(Utc::now);
         let mut update = if affects_metadata {
-            self.observe_items(items)?
+            self.observe_items(items, observed_at)?
         } else {
-            thread_updated_at_touch()
+            thread_updated_at_touch(observed_at)
         };
         if advances_recency {
-            update.advance_recency_at = Some(Utc::now());
+            update.advance_recency_at = Some(observed_at);
         }
         self.merge_pending_update(Some(update));
         if !affects_metadata
@@ -186,11 +201,15 @@ impl ThreadMetadataSync {
         self.take_pending_update()
     }
 
-    fn observe_items(&mut self, items: &[RolloutItem]) -> Option<ThreadMetadataPatch> {
+    fn observe_items(
+        &mut self,
+        items: &[RolloutItem],
+        observed_at: DateTime<Utc>,
+    ) -> Option<ThreadMetadataPatch> {
         self.observe_items_with_update(
             items,
             ThreadMetadataPatch {
-                updated_at: Some(Utc::now()),
+                updated_at: Some(observed_at),
                 ..Default::default()
             },
         )
@@ -344,9 +363,9 @@ fn user_message_preview(user: &UserMessageEvent) -> Option<String> {
     None
 }
 
-fn thread_updated_at_touch() -> ThreadMetadataPatch {
+fn thread_updated_at_touch(updated_at: DateTime<Utc>) -> ThreadMetadataPatch {
     ThreadMetadataPatch {
-        updated_at: Some(Utc::now()),
+        updated_at: Some(updated_at),
         ..Default::default()
     }
 }

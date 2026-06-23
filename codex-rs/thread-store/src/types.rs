@@ -62,6 +62,22 @@ pub struct ThreadPersistenceMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtraConfig {}
 
+/// Creation-only timestamps used to initialize a newly persisted thread.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitialThreadTimestamps {
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) updated_at: DateTime<Utc>,
+}
+
+impl InitialThreadTimestamps {
+    pub fn new(created_at: DateTime<Utc>, updated_at: DateTime<Utc>) -> Self {
+        Self {
+            created_at,
+            updated_at,
+        }
+    }
+}
+
 /// Parameters required to create a persisted thread.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateThreadParams {
@@ -85,6 +101,9 @@ pub struct CreateThreadParams {
     pub dynamic_tools: Vec<DynamicToolSpec>,
     /// Multi-agent runtime selected when the thread was created.
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Optional creation-only timestamp initialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_timestamps: Option<InitialThreadTimestamps>,
     /// Metadata captured for the newly created thread.
     pub metadata: ThreadPersistenceMetadata,
 }

@@ -120,6 +120,7 @@ mod tests {
                     base_instructions: BaseInstructions::default(),
                     dynamic_tools: Vec::new(),
                     multi_agent_version: None,
+                    initial_timestamps: None,
                     metadata: ThreadPersistenceMetadata {
                         cwd: None,
                         model_provider: "test-provider".to_string(),
@@ -248,6 +249,11 @@ impl InMemoryThreadStore {
             memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)
                 .then_some("disabled".to_string()),
             multi_agent_version: params.multi_agent_version,
+            timestamp: params
+                .initial_timestamps
+                .as_ref()
+                .map(|timestamps| timestamps.created_at.to_rfc3339())
+                .unwrap_or_default(),
             ..SessionMeta::default()
         };
         state
@@ -535,12 +541,30 @@ fn stored_thread_from_state(
         reasoning_effort: metadata.and_then(|metadata| metadata.reasoning_effort.clone()),
         created_at: metadata
             .and_then(|metadata| metadata.created_at)
+            .or_else(|| {
+                created
+                    .initial_timestamps
+                    .as_ref()
+                    .map(|timestamps| timestamps.created_at)
+            })
             .unwrap_or_else(Utc::now),
         updated_at: metadata
             .and_then(|metadata| metadata.updated_at)
+            .or_else(|| {
+                created
+                    .initial_timestamps
+                    .as_ref()
+                    .map(|timestamps| timestamps.updated_at)
+            })
             .unwrap_or_else(Utc::now),
         recency_at: metadata
             .and_then(|metadata| metadata.advance_recency_at.or(metadata.updated_at))
+            .or_else(|| {
+                created
+                    .initial_timestamps
+                    .as_ref()
+                    .map(|timestamps| timestamps.updated_at)
+            })
             .unwrap_or_else(Utc::now),
         archived_at: None,
         cwd: metadata

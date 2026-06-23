@@ -55,6 +55,8 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            rollout_thread.created_at = thread.created_at;
+            rollout_thread.updated_at = thread.updated_at;
             rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
@@ -116,6 +118,8 @@ pub(super) async fn read_thread_by_rollout_path(
         });
     }
     if let Some(metadata) = read_sqlite_metadata(store, thread.thread_id).await {
+        thread.created_at = metadata.created_at;
+        thread.updated_at = metadata.updated_at;
         thread.recency_at = metadata.recency_at;
         let existing_git_info = thread.git_info.take();
         let (fallback_sha, fallback_branch, fallback_origin_url) = match existing_git_info {

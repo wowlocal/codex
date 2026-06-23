@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chrono::DateTime;
 use chrono::Utc;
 use codex_arg0::Arg0DispatchPaths;
 use codex_core::ThreadManager;
@@ -19,6 +20,7 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::is_persisted_rollout_item;
 use codex_thread_store::AppendThreadItemsParams;
 use codex_thread_store::CreateThreadParams;
+use codex_thread_store::InitialThreadTimestamps;
 use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
@@ -167,6 +169,8 @@ impl ExternalAgentSessionImporter {
             cwd,
             title,
             first_user_message,
+            created_at: source_created_at,
+            last_active_at: source_last_active_at,
             mut rollout_items,
         } = session;
         let config = self
@@ -198,7 +202,22 @@ impl ExternalAgentSessionImporter {
         } else {
             ThreadMemoryMode::Disabled
         };
-        let now = Utc::now();
+        let source_timestamps =
+            source_created_at
+                .zip(source_last_active_at)
+                .and_then(|(created_at, updated_at)| {
+                    Some((
+                        DateTime::<Utc>::from_timestamp(created_at, /*nsecs*/ 0)?,
+                        DateTime::<Utc>::from_timestamp(updated_at, /*nsecs*/ 0)?,
+                    ))
+                });
+        let initial_timestamps = source_timestamps
+            .as_ref()
+            .map(|(created_at, updated_at)| InitialThreadTimestamps::new(*created_at, *updated_at));
+        let (created_at, updated_at) = source_timestamps.unwrap_or_else(|| {
+            let now = Utc::now();
+            (now, now)
+        });
         let create_params = CreateThreadParams {
             session_id: thread_id.into(),
             thread_id,
@@ -215,6 +234,7 @@ impl ExternalAgentSessionImporter {
             },
             dynamic_tools: Vec::new(),
             multi_agent_version: Some(MultiAgentVersion::V1),
+            initial_timestamps,
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(cwd.clone()),
                 model_provider: model_provider.clone(),
@@ -229,8 +249,9 @@ impl ExternalAgentSessionImporter {
             title,
             preview: first_user_message.clone(),
             model_provider: Some(model_provider),
-            created_at: Some(now),
-            updated_at: Some(now),
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+            advance_recency_at: Some(updated_at),
             source: Some(source.clone()),
             thread_source: Some(None),
             agent_nickname: Some(source.get_nickname()),

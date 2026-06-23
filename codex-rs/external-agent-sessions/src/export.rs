@@ -35,6 +35,8 @@ pub(crate) fn load_session_for_import_with_content_sha256(
     let Some(cwd) = parsed.cwd else {
         return Ok(None);
     };
+    let created_at = parsed.created_at;
+    let last_active_at = parsed.last_active_at;
     let messages = parsed.messages;
     let first_user_message = messages
         .iter()
@@ -50,6 +52,8 @@ pub(crate) fn load_session_for_import_with_content_sha256(
             cwd,
             title,
             first_user_message,
+            created_at,
+            last_active_at,
             rollout_items,
         },
         parsed.content_sha256,
@@ -62,7 +66,10 @@ fn rollout_items_from_messages(messages: Vec<ConversationMessage>) -> Vec<Rollou
     let mut response_item_bytes = 0i64;
     let mut last_model_visible_tokens = 0i64;
     let mut user_turn_count = 0usize;
-    let completed_at = messages.last().and_then(|message| message.timestamp);
+    let completed_at = messages
+        .iter()
+        .filter_map(|message| message.timestamp)
+        .max();
 
     for message in messages {
         match message.role {
@@ -329,6 +336,83 @@ mod tests {
     }
 
     #[test]
+    fn loads_source_timestamp_bounds_for_imported_session() {
+        let root = TempDir::new().expect("tempdir");
+        let project_root = root.path().join("repo");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let path = root.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            jsonl(&[
+                record_at(
+                    "user",
+                    "first request",
+                    &project_root,
+                    "2025-03-04T05:06:07Z",
+                ),
+                record_at(
+                    "assistant",
+                    "earliest answer",
+                    &project_root,
+                    "2024-01-02T03:04:05Z",
+                ),
+                record_at(
+                    "assistant",
+                    "latest answer",
+                    &project_root,
+                    "2026-05-06T07:08:09Z",
+                ),
+                record_at("assistant", "invalid timestamp", &project_root, "invalid"),
+                record_without_timestamp("user", "missing timestamp", &project_root),
+            ]),
+        )
+        .expect("session");
+
+        let imported = load_session_for_import(&path)
+            .expect("load")
+            .expect("session");
+        let completed_at = imported
+            .rollout_items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => event.completed_at,
+                _ => None,
+            });
+
+        assert_eq!(
+            (imported.created_at, imported.last_active_at, completed_at,),
+            (
+                unix_timestamp("2024-01-02T03:04:05Z"),
+                unix_timestamp("2026-05-06T07:08:09Z"),
+                unix_timestamp("2026-05-06T07:08:09Z"),
+            )
+        );
+    }
+
+    #[test]
+    fn leaves_imported_session_timestamps_empty_without_valid_source_timestamp() {
+        let root = TempDir::new().expect("tempdir");
+        let project_root = root.path().join("repo");
+        std::fs::create_dir_all(&project_root).expect("project root");
+        let path = root.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            jsonl(&[
+                record_at("user", "first request", &project_root, "invalid"),
+                record_without_timestamp("assistant", "first answer", &project_root),
+            ]),
+        )
+        .expect("session");
+
+        let imported = load_session_for_import(&path)
+            .expect("load")
+            .expect("session");
+
+        assert_eq!((imported.created_at, imported.last_active_at), (None, None));
+    }
+
+    #[test]
     fn loads_ai_title_for_imported_session() {
         let root = TempDir::new().expect("tempdir");
         let project_root = root.path().join("repo");
@@ -407,10 +491,22 @@ mod tests {
 
     fn record(role: &str, text: &str, cwd: &Path) -> JsonValue {
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        record_at(role, text, cwd, &timestamp)
+    }
+
+    fn record_at(role: &str, text: &str, cwd: &Path, timestamp: &str) -> JsonValue {
         serde_json::json!({
             "type": role,
             "cwd": cwd,
             "timestamp": timestamp,
+            "message": { "content": text }
+        })
+    }
+
+    fn record_without_timestamp(role: &str, text: &str, cwd: &Path) -> JsonValue {
+        serde_json::json!({
+            "type": role,
+            "cwd": cwd,
             "message": { "content": text }
         })
     }
@@ -435,5 +531,11 @@ mod tests {
             .map(JsonValue::to_string)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn unix_timestamp(timestamp: &str) -> Option<i64> {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .ok()
+            .map(|timestamp| timestamp.timestamp())
     }
 }

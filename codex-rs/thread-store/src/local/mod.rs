@@ -312,6 +312,8 @@ impl ThreadStore for LocalThreadStore {
 mod tests {
     use std::sync::Arc;
 
+    use chrono::DateTime;
+    use chrono::Utc;
     use codex_protocol::ThreadId;
     use codex_protocol::models::BaseInstructions;
     use codex_protocol::models::FunctionCallOutputPayload;
@@ -328,6 +330,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::InitialThreadTimestamps;
     use crate::LiveThread;
     use crate::ThreadPersistenceMetadata;
     use crate::local::test_support::test_config;
@@ -380,6 +383,93 @@ mod tests {
             .expect_err("shutdown should remove the live thread writer");
         assert!(
             matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_timestamps_seed_rollout_sqlite_and_read_repair() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let thread_id = ThreadId::new();
+        let created_at = DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
+            .expect("created timestamp")
+            .with_timezone(&Utc);
+        let updated_at = DateTime::parse_from_rfc3339("2024-02-03T04:05:06Z")
+            .expect("updated timestamp")
+            .with_timezone(&Utc);
+        let mut params = create_thread_params(thread_id);
+        params.initial_timestamps = Some(InitialThreadTimestamps::new(created_at, updated_at));
+        let live_thread = LiveThread::create(store.clone(), params)
+            .await
+            .expect("create live thread");
+
+        live_thread
+            .append_items(&[user_message_item("source history")])
+            .await
+            .expect("append source history");
+        let rollout_path = live_thread
+            .local_rollout_path()
+            .await
+            .expect("read rollout path")
+            .expect("local rollout path");
+        live_thread.shutdown().await.expect("shutdown thread");
+
+        let metadata = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("read sqlite metadata")
+            .expect("sqlite metadata");
+        assert_eq!(
+            (
+                metadata.created_at,
+                metadata.updated_at,
+                metadata.recency_at,
+            ),
+            (created_at, updated_at, updated_at)
+        );
+        let session_meta = codex_rollout::read_session_meta_line(&rollout_path)
+            .await
+            .expect("read session metadata");
+        let rollout_modified_at = std::fs::metadata(&rollout_path)
+            .expect("rollout metadata")
+            .modified()
+            .map(DateTime::<Utc>::from)
+            .expect("rollout modified timestamp");
+        assert_eq!(
+            (session_meta.meta.timestamp, rollout_modified_at),
+            ("2024-01-02T03:04:05.000Z".to_string(), updated_at,)
+        );
+        assert!(rollout_path.starts_with(home.path().join("sessions/2024/01/02")));
+
+        assert_eq!(
+            runtime
+                .delete_thread(thread_id)
+                .await
+                .expect("delete sqlite metadata"),
+            1
+        );
+        let repaired = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read and repair thread");
+        assert_eq!(
+            (
+                repaired.created_at,
+                repaired.updated_at,
+                repaired.recency_at,
+            ),
+            (created_at, updated_at, updated_at)
         );
     }
 
@@ -1133,6 +1223,7 @@ mod tests {
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             multi_agent_version: None,
+            initial_timestamps: None,
             metadata: thread_metadata(),
         }
     }
