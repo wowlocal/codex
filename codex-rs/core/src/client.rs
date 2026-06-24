@@ -234,6 +234,9 @@ impl RequestRouteTelemetry {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     prompt_cache_key_override: Option<String>,
+    /// When set, the Responses WebSocket handshake honors the platform system proxy
+    /// (including PAC/WPAD) for the target URL, matching the HTTP client policy.
+    outbound_proxy: Option<codex_api::OutboundProxyConfig>,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -422,6 +425,7 @@ impl ModelClient {
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
             prompt_cache_key_override: None,
+            outbound_proxy: None,
         }
     }
 
@@ -430,6 +434,19 @@ impl ModelClient {
         prompt_cache_key_override: Option<String>,
     ) -> Self {
         self.prompt_cache_key_override = prompt_cache_key_override;
+        self
+    }
+
+    /// Enables system-proxy-aware routing for the Responses WebSocket handshake.
+    ///
+    /// `outbound_proxy` mirrors the value used to build the HTTP client, so WebSocket and
+    /// HTTP traffic resolve the system proxy the same way. `None` keeps the existing
+    /// environment-variable proxy behavior.
+    pub(crate) fn with_outbound_proxy(
+        mut self,
+        outbound_proxy: Option<codex_api::OutboundProxyConfig>,
+    ) -> Self {
+        self.outbound_proxy = outbound_proxy;
         self
     }
 
@@ -931,12 +948,14 @@ impl ModelClient {
         let start = Instant::now();
         let result = match tokio::time::timeout(
             websocket_connect_timeout,
-            ApiWebSocketResponsesClient::new(api_provider, api_auth).connect(
-                headers,
-                codex_login::default_client::default_headers(),
-                /*turn_state*/ None,
-                Some(websocket_telemetry),
-            ),
+            ApiWebSocketResponsesClient::new(api_provider, api_auth)
+                .with_outbound_proxy(self.outbound_proxy)
+                .connect(
+                    headers,
+                    codex_login::default_client::default_headers(),
+                    /*turn_state*/ None,
+                    Some(websocket_telemetry),
+                ),
         )
         .await
         {

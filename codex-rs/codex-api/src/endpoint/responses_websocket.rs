@@ -10,8 +10,12 @@ use crate::safety_buffering::treatment_from_headers;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
+use codex_client::OutboundProxyConfig;
 use codex_client::TransportError;
+use codex_client::WebSocketProxyDecision;
+use codex_client::build_rustls_client_config_with_custom_ca;
 use codex_client::maybe_build_rustls_client_config_with_custom_ca;
+use codex_client::resolve_websocket_proxy;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -25,14 +29,20 @@ use serde_json::map::Map as JsonMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
-use tokio_tungstenite::MaybeTlsStream;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_tungstenite::Connector;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::client_async_tls_with_config;
 use tokio_tungstenite::connect_async_tls_with_config;
+use tokio_tungstenite::proxy::connect_via_proxy;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -47,7 +57,15 @@ use tracing::trace;
 use tungstenite::extensions::ExtensionsConfig;
 use tungstenite::extensions::compression::deflate::DeflateConfig;
 use tungstenite::protocol::WebSocketConfig;
+use tungstenite::proxy::ProxyAuth;
+use tungstenite::proxy::ProxyConfig;
+use tungstenite::proxy::ProxyScheme;
 use url::Url;
+
+/// WebSocket handshake request built from the target URL plus Codex headers.
+type WsHandshakeRequest = tokio_tungstenite::tungstenite::handshake::client::Request;
+/// HTTP upgrade response returned by a successful WebSocket handshake.
+type WsHandshakeResponse = tokio_tungstenite::tungstenite::handshake::client::Response;
 
 struct WsStream {
     tx_command: mpsc::Sender<WsCommand>,
@@ -63,7 +81,10 @@ enum WsCommand {
 }
 
 impl WsStream {
-    fn new(inner: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+    fn new<S>(inner: WebSocketStream<S>) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
 
@@ -293,6 +314,7 @@ impl ResponsesWebsocketConnection {
 pub struct ResponsesWebsocketClient {
     provider: Provider,
     auth: SharedAuthProvider,
+    outbound_proxy: Option<OutboundProxyConfig>,
 }
 
 /// Close frame information captured by a handshake probe.
@@ -324,7 +346,23 @@ pub struct ResponsesWebsocketProbe {
 impl ResponsesWebsocketClient {
     /// Creates a Responses WebSocket client for an already-resolved provider and auth source.
     pub fn new(provider: Provider, auth: SharedAuthProvider) -> Self {
-        Self { provider, auth }
+        Self {
+            provider,
+            auth,
+            outbound_proxy: None,
+        }
+    }
+
+    /// Enables system-proxy-aware routing for the WebSocket handshake.
+    ///
+    /// When `outbound_proxy` is `Some`, the handshake honors the platform system proxy
+    /// (including PAC/WPAD) for the target URL, matching the policy used by the HTTP
+    /// client. When `None`, the handshake keeps its existing environment-variable proxy
+    /// behavior (`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY`).
+    #[must_use]
+    pub fn with_outbound_proxy(mut self, outbound_proxy: Option<OutboundProxyConfig>) -> Self {
+        self.outbound_proxy = outbound_proxy;
+        self
     }
 
     #[instrument(
@@ -350,7 +388,7 @@ impl ResponsesWebsocketClient {
         self.auth.add_auth_headers(&mut headers);
 
         let (stream, _status, server_reasoning_included, models_etag, server_model) =
-            connect_websocket(ws_url, headers, turn_state.clone()).await?;
+            connect_websocket(ws_url, headers, turn_state.clone(), self.outbound_proxy).await?;
         Ok(ResponsesWebsocketConnection::new(
             stream,
             self.provider.stream_idle_timeout,
@@ -384,7 +422,13 @@ impl ResponsesWebsocketClient {
         self.auth.add_auth_headers(&mut headers);
 
         let (mut stream, status, reasoning_included, models_etag, server_model) =
-            connect_websocket(ws_url.clone(), headers, /*turn_state*/ None).await?;
+            connect_websocket(
+                ws_url.clone(),
+                headers,
+                /*turn_state*/ None,
+                self.outbound_proxy,
+            )
+            .await?;
         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
             .await
             .ok()
@@ -439,6 +483,7 @@ async fn connect_websocket(
     url: Url,
     headers: HeaderMap,
     turn_state: Option<Arc<OnceLock<String>>>,
+    outbound_proxy: Option<OutboundProxyConfig>,
 ) -> Result<(WsStream, StatusCode, bool, Option<String>, Option<String>), ApiError> {
     ensure_rustls_crypto_provider();
     info!("connecting to websocket: {url}");
@@ -456,15 +501,35 @@ async fn connect_websocket(
         .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?
         .map(tokio_tungstenite::Connector::Rustls);
 
-    let response = connect_async_tls_with_config(
-        request,
-        Some(websocket_config()),
-        false, // `false` means "do not disable Nagle", which is tungstenite's recommended default.
-        connector,
-    )
-    .await;
+    // `false` means "do not disable Nagle", which is tungstenite's recommended default.
+    const DISABLE_NAGLE: bool = false;
 
-    let (stream, response) = match response {
+    // Decide how the underlying connection is established. When system-proxy resolution is
+    // enabled and the platform selects a route, honor it (matching the HTTP client). For
+    // `https` (TLS-to-proxy) and scheme-less env proxies the tunnel is established here since
+    // tungstenite cannot. Everything else defers to tungstenite, whose own connect path
+    // applies environment proxies (`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY`).
+    let connected = match resolve_websocket_proxy(url.as_str(), outbound_proxy.as_ref()) {
+        WebSocketProxyDecision::UseEnvironment => connect_async_tls_with_config(
+            request,
+            Some(websocket_config()),
+            DISABLE_NAGLE,
+            connector,
+        )
+        .await
+        .map(|(stream, response)| (WsStream::new(stream), response))
+        .map_err(|err| map_ws_error(err, &url)),
+        WebSocketProxyDecision::Direct => {
+            debug!("proxy resolution selected a direct websocket connection: {url}");
+            let stream = connect_websocket_tcp(&url).await?;
+            complete_websocket_handshake(request, stream, connector, &url).await
+        }
+        WebSocketProxyDecision::Proxy { url: proxy_url } => {
+            connect_websocket_through_proxy(request, &url, &proxy_url, connector).await
+        }
+    };
+
+    let (stream, response) = match connected {
         Ok((stream, response)) => {
             info!(
                 "successfully connected to websocket: {url}, headers: {:?}",
@@ -474,7 +539,7 @@ async fn connect_websocket(
         }
         Err(err) => {
             error!("failed to connect to websocket: {err}, url: {url}");
-            return Err(map_ws_error(err, &url));
+            return Err(err);
         }
     };
 
@@ -498,12 +563,148 @@ async fn connect_websocket(
         let _ = turn_state.set(header_value.to_string());
     }
     Ok((
-        WsStream::new(stream),
+        stream,
         response.status(),
         reasoning_included,
         models_etag,
         server_model,
     ))
+}
+
+/// Extracts the `(host, port)` to dial for a `ws://`/`wss://` URL, stripping IPv6 brackets.
+fn websocket_host_port(url: &Url) -> Result<(String, u16), ApiError> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| ApiError::Stream(format!("websocket URL has no host: {url}")))?;
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| ApiError::Stream(format!("websocket URL has no port: {url}")))?;
+    Ok((host, port))
+}
+
+/// Opens a direct TCP connection to the websocket target, bypassing any proxy.
+async fn connect_websocket_tcp(url: &Url) -> Result<TcpStream, ApiError> {
+    let (host, port) = websocket_host_port(url)?;
+    TcpStream::connect((host.as_str(), port))
+        .await
+        .map_err(|err| ApiError::Transport(TransportError::Network(err.to_string())))
+}
+
+/// Completes the TLS + WebSocket handshake over an already-connected `stream`.
+///
+/// Generic over the transport so it serves a direct TCP socket, an HTTP-proxy tunnel
+/// (plain `TcpStream`), and an HTTPS-proxy tunnel (`TlsStream`) alike.
+async fn complete_websocket_handshake<S>(
+    request: WsHandshakeRequest,
+    stream: S,
+    connector: Option<Connector>,
+    url: &Url,
+) -> Result<(WsStream, WsHandshakeResponse), ApiError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (stream, response) =
+        client_async_tls_with_config(request, stream, Some(websocket_config()), connector)
+            .await
+            .map_err(|err| map_ws_error(err, url))?;
+    Ok((WsStream::new(stream), response))
+}
+
+/// Tunnels the websocket target through `proxy_url`, then completes the handshake.
+///
+/// `http` proxies use a plaintext HTTP CONNECT tunnel; `https` proxies establish TLS to the
+/// proxy first (trusting the same roots as HTTPS traffic) and CONNECT over that TLS stream.
+async fn connect_websocket_through_proxy(
+    request: WsHandshakeRequest,
+    url: &Url,
+    proxy_url: &str,
+    connector: Option<Connector>,
+) -> Result<(WsStream, WsHandshakeResponse), ApiError> {
+    let (host, port) = websocket_host_port(url)?;
+    let proxy = Url::parse(proxy_url).map_err(|err| {
+        ApiError::Stream(format!("invalid websocket proxy URL `{proxy_url}`: {err}"))
+    })?;
+
+    match proxy.scheme() {
+        "http" => {
+            let proxy_config = ProxyConfig::parse(proxy_url).map_err(|err| {
+                ApiError::Stream(format!("invalid websocket proxy `{proxy_url}`: {err}"))
+            })?;
+            let authority = proxy_config.authority();
+            debug!("tunneling websocket {url} through http proxy {authority}");
+            let proxy_stream = TcpStream::connect(&authority)
+                .await
+                .map_err(|err| proxy_connect_error(&authority, err))?;
+            let tunneled = connect_via_proxy(proxy_stream, &proxy_config, host.as_str(), port)
+                .await
+                .map_err(|err| map_ws_error(err, url))?;
+            complete_websocket_handshake(request, tunneled, connector, url).await
+        }
+        "https" => {
+            let proxy_host = proxy.host_str().ok_or_else(|| {
+                ApiError::Stream(format!("websocket proxy URL has no host: {proxy_url}"))
+            })?;
+            let proxy_port = proxy.port_or_known_default().ok_or_else(|| {
+                ApiError::Stream(format!("websocket proxy URL has no port: {proxy_url}"))
+            })?;
+            let authority = format!("{proxy_host}:{proxy_port}");
+            debug!("tunneling websocket {url} through https proxy {authority}");
+            let proxy_stream = TcpStream::connect((proxy_host, proxy_port))
+                .await
+                .map_err(|err| proxy_connect_error(&authority, err))?;
+
+            // Establish TLS to the proxy itself, trusting the same root CAs as HTTPS traffic,
+            // then issue the HTTP CONNECT over that TLS stream.
+            let tls_config = build_rustls_client_config_with_custom_ca()
+                .map_err(|err| ApiError::Stream(format!("failed to configure proxy TLS: {err}")))?;
+            let server_name = ServerName::try_from(proxy_host.to_string()).map_err(|err| {
+                ApiError::Stream(format!("invalid proxy server name `{proxy_host}`: {err}"))
+            })?;
+            let tls_stream = TlsConnector::from(tls_config)
+                .connect(server_name, proxy_stream)
+                .await
+                .map_err(|err| {
+                    ApiError::Transport(TransportError::Network(format!(
+                        "failed to establish TLS to proxy {authority}: {err}"
+                    )))
+                })?;
+            let proxy_config = ProxyConfig {
+                scheme: ProxyScheme::Http,
+                host: proxy_host.to_string(),
+                port: proxy_port,
+                auth: proxy_auth_from_url(&proxy),
+            };
+            let tunneled = connect_via_proxy(tls_stream, &proxy_config, host.as_str(), port)
+                .await
+                .map_err(|err| map_ws_error(err, url))?;
+            complete_websocket_handshake(request, tunneled, connector, url).await
+        }
+        other => Err(ApiError::Stream(format!(
+            "unsupported websocket proxy scheme `{other}` for {proxy_url}"
+        ))),
+    }
+}
+
+/// Extracts basic-auth credentials from a proxy URL's userinfo, if present.
+fn proxy_auth_from_url(proxy: &Url) -> Option<ProxyAuth> {
+    let username = proxy.username();
+    if username.is_empty() {
+        return None;
+    }
+    Some(ProxyAuth {
+        username: username.to_string(),
+        password: proxy.password().unwrap_or_default().to_string(),
+    })
+}
+
+fn proxy_connect_error(authority: &str, err: std::io::Error) -> ApiError {
+    ApiError::Transport(TransportError::Network(format!(
+        "failed to connect to proxy {authority}: {err}"
+    )))
 }
 
 fn websocket_config() -> WebSocketConfig {
@@ -1040,6 +1241,89 @@ mod tests {
         assert_eq!(
             merged.get("x-default-only"),
             Some(&HeaderValue::from_static("default-only"))
+        );
+    }
+
+    #[test]
+    fn websocket_host_port_uses_scheme_default_and_strips_ipv6_brackets() {
+        let wss = Url::parse("wss://api.openai.com/v1/responses").expect("valid url");
+        assert_eq!(
+            websocket_host_port(&wss).expect("host/port"),
+            ("api.openai.com".to_string(), 443)
+        );
+
+        let ws = Url::parse("ws://example.test:8080/socket").expect("valid url");
+        assert_eq!(
+            websocket_host_port(&ws).expect("host/port"),
+            ("example.test".to_string(), 8080)
+        );
+
+        let ipv6 = Url::parse("wss://[2606:4700::1]/socket").expect("valid url");
+        assert_eq!(
+            websocket_host_port(&ipv6).expect("host/port"),
+            ("2606:4700::1".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn proxy_auth_from_url_extracts_basic_credentials() {
+        let with_auth = Url::parse("http://user:pass@proxy.test:8080").expect("valid url");
+        let auth = proxy_auth_from_url(&with_auth).expect("auth present");
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pass");
+
+        let without_auth = Url::parse("http://proxy.test:8080").expect("valid url");
+        assert!(proxy_auth_from_url(&without_auth).is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_websocket_through_http_proxy_completes_handshake() {
+        use tokio::io::AsyncReadExt as _;
+        use tokio::io::AsyncWriteExt as _;
+        use tokio_tungstenite::accept_async_with_config;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy listener should bind");
+        let proxy_addr = listener.local_addr().expect("proxy listener address");
+
+        // The proxy accepts the CONNECT tunnel, then upgrades the same socket to a WebSocket
+        // server so the client's TLS-less `ws://` handshake completes end to end.
+        let proxy = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("proxy accepts connection");
+            let mut buf = vec![0u8; 1024];
+            let read = stream
+                .read(&mut buf)
+                .await
+                .expect("proxy reads CONNECT request");
+            let connect_request = String::from_utf8_lossy(&buf[..read]).into_owned();
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .expect("proxy writes CONNECT response");
+            let _ws = accept_async_with_config(stream, Some(websocket_config()))
+                .await
+                .expect("proxy completes websocket upgrade");
+            connect_request
+        });
+
+        let url = Url::parse("ws://target.test/v1/responses").expect("valid url");
+        let proxy_url = format!("http://{proxy_addr}");
+        let request = url
+            .as_str()
+            .into_client_request()
+            .expect("build handshake request");
+        let (stream, response) =
+            connect_websocket_through_proxy(request, &url, &proxy_url, /*connector*/ None)
+                .await
+                .expect("proxy handshake succeeds");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        drop(stream);
+
+        let connect_request = proxy.await.expect("proxy task joins");
+        assert!(
+            connect_request.starts_with("CONNECT target.test:80 HTTP/1.1"),
+            "unexpected CONNECT request: {connect_request}"
         );
     }
 }

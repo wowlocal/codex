@@ -210,3 +210,161 @@ fn system_proxy_cache_key_preserves_url_specific_pac_decisions() {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     assert!(!cache_key.contains(request_url));
 }
+
+fn map_env(pairs: &[(&str, &str)]) -> MapEnv {
+    MapEnv {
+        values: pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect(),
+    }
+}
+
+fn unreachable_system_resolver(_: &str, _: &RequestOrigin) -> SystemProxyDecision {
+    panic!("system resolver must not run")
+}
+
+#[test]
+fn resolve_websocket_proxy_disabled_without_env_defers_to_transport() {
+    let env = map_env(&[]);
+    let decision = resolve_websocket_proxy_with(
+        "wss://api.openai.com/v1/responses",
+        None,
+        &env,
+        unreachable_system_resolver,
+    );
+    assert_eq!(decision, WebSocketProxyDecision::UseEnvironment);
+}
+
+#[test]
+fn resolve_websocket_proxy_maps_wss_scheme_to_https_for_resolution() {
+    let config = OutboundProxyConfig::respect_system_proxy();
+    let env = map_env(&[]);
+    let decision = resolve_websocket_proxy_with(
+        "wss://api.openai.com/v1/responses",
+        Some(&config),
+        &env,
+        |url, origin| {
+            assert_eq!(url, "https://api.openai.com/v1/responses");
+            assert_eq!(origin.scheme, "https");
+            assert_eq!(origin.host, "api.openai.com");
+            assert_eq!(origin.port, 443);
+            SystemProxyDecision::Proxy {
+                url: "http://proxy.test:3128".to_string(),
+            }
+        },
+    );
+    assert_eq!(
+        decision,
+        WebSocketProxyDecision::Proxy {
+            url: "http://proxy.test:3128".to_string(),
+        }
+    );
+}
+
+#[test]
+fn resolve_websocket_proxy_passes_through_direct_and_unavailable() {
+    let config = OutboundProxyConfig::respect_system_proxy();
+    let env = map_env(&[]);
+
+    let direct = resolve_websocket_proxy_with(
+        "ws://example.test:8080/socket",
+        Some(&config),
+        &env,
+        |url, origin| {
+            assert_eq!(url, "http://example.test:8080/socket");
+            assert_eq!(origin.port, 8080);
+            SystemProxyDecision::Direct
+        },
+    );
+    assert_eq!(direct, WebSocketProxyDecision::Direct);
+
+    // System resolution unavailable falls back to env handling, which has no proxy here.
+    let unavailable =
+        resolve_websocket_proxy_with("wss://example.test/socket", Some(&config), &env, |_, _| {
+            SystemProxyDecision::Unavailable {
+                failure: RouteFailureClass::ProxyResolutionUnavailable,
+            }
+        });
+    assert_eq!(unavailable, WebSocketProxyDecision::UseEnvironment);
+}
+
+#[test]
+fn resolve_websocket_proxy_rejects_unsupported_scheme() {
+    let config = OutboundProxyConfig::respect_system_proxy();
+    let env = map_env(&[]);
+    let decision = resolve_websocket_proxy_with(
+        "ftp://example.test/socket",
+        Some(&config),
+        &env,
+        unreachable_system_resolver,
+    );
+    assert_eq!(decision, WebSocketProxyDecision::UseEnvironment);
+}
+
+#[test]
+fn resolve_websocket_proxy_resolves_https_env_proxy() {
+    let env = map_env(&[("HTTPS_PROXY", "https://proxy.corp.com:8443")]);
+    let decision = resolve_websocket_proxy_with(
+        "wss://api.openai.com/v1/responses",
+        None,
+        &env,
+        unreachable_system_resolver,
+    );
+    assert_eq!(
+        decision,
+        WebSocketProxyDecision::Proxy {
+            url: "https://proxy.corp.com:8443".to_string(),
+        }
+    );
+}
+
+#[test]
+fn resolve_websocket_proxy_normalizes_scheme_less_env_proxy_to_http() {
+    let env = map_env(&[("HTTPS_PROXY", "proxy.corp.com:8080")]);
+    let decision = resolve_websocket_proxy_with(
+        "wss://api.openai.com/v1/responses",
+        None,
+        &env,
+        unreachable_system_resolver,
+    );
+    assert_eq!(
+        decision,
+        WebSocketProxyDecision::Proxy {
+            url: "http://proxy.corp.com:8080".to_string(),
+        }
+    );
+}
+
+#[test]
+fn resolve_websocket_proxy_defers_http_and_socks_env_proxies_to_transport() {
+    for proxy in ["http://proxy.corp.com:8080", "socks5://proxy.corp.com:1080"] {
+        let env = map_env(&[("HTTPS_PROXY", proxy)]);
+        let decision = resolve_websocket_proxy_with(
+            "wss://api.openai.com/v1/responses",
+            None,
+            &env,
+            unreachable_system_resolver,
+        );
+        assert_eq!(
+            decision,
+            WebSocketProxyDecision::UseEnvironment,
+            "{proxy} should defer to transport env handling"
+        );
+    }
+}
+
+#[test]
+fn resolve_websocket_proxy_honors_no_proxy_for_https_env_proxy() {
+    let env = map_env(&[
+        ("HTTPS_PROXY", "https://proxy.corp.com:8443"),
+        ("NO_PROXY", "api.openai.com"),
+    ]);
+    let decision = resolve_websocket_proxy_with(
+        "wss://api.openai.com/v1/responses",
+        None,
+        &env,
+        unreachable_system_resolver,
+    );
+    assert_eq!(decision, WebSocketProxyDecision::Direct);
+}

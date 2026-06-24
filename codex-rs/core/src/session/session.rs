@@ -1079,6 +1079,11 @@ impl Session {
                         &session_configuration.session_source,
                         session_configuration.parent_thread_id,
                     ),
+                )
+                .with_outbound_proxy(
+                    config
+                        .respect_system_proxy
+                        .then(codex_api::OutboundProxyConfig::respect_system_proxy),
                 ),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(),
                 tool_search_handler_cache: Default::default(),

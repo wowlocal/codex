@@ -198,6 +198,18 @@ pub fn maybe_build_rustls_client_config_with_custom_ca()
     maybe_build_rustls_client_config_with_env(&ProcessEnv)
 }
 
+/// Builds a rustls client config that trusts the platform native roots plus the Codex custom
+/// CA bundle when one is configured.
+///
+/// Unlike [`maybe_build_rustls_client_config_with_custom_ca`], this always returns a config
+/// rather than falling back to a transport-default connector. WebSocket proxy tunneling needs
+/// a concrete config to establish TLS to an `https://` proxy, and reuses this so the proxy
+/// connection honors the same enterprise root CA policy as HTTPS traffic.
+pub fn build_rustls_client_config_with_custom_ca()
+-> Result<Arc<ClientConfig>, BuildCustomCaTransportError> {
+    build_rustls_client_config_with_env(&ProcessEnv)
+}
+
 /// Builds a reqwest client for spawned subprocess tests that exercise CA behavior.
 ///
 /// This is the test-only client-construction path used by the subprocess coverage in `tests/`.
@@ -215,15 +227,31 @@ pub fn build_reqwest_client_for_subprocess_tests(
 fn maybe_build_rustls_client_config_with_env(
     env_source: &dyn EnvSource,
 ) -> Result<Option<Arc<ClientConfig>>, BuildCustomCaTransportError> {
-    let Some(bundle) = env_source.configured_ca_bundle() else {
+    if env_source.configured_ca_bundle().is_none() {
         return Ok(None);
-    };
+    }
+    build_rustls_client_config_with_env(env_source).map(Some)
+}
 
+fn build_rustls_client_config_with_env(
+    env_source: &dyn EnvSource,
+) -> Result<Arc<ClientConfig>, BuildCustomCaTransportError> {
     ensure_rustls_crypto_provider();
 
     // Start from the platform roots so websocket callers keep the same baseline trust behavior
     // they would get from tungstenite's default rustls connector, then layer in the Codex custom
     // CA bundle on top when configured.
+    let mut root_store = native_root_store();
+    add_custom_ca_to_root_store(env_source, &mut root_store)?;
+
+    Ok(Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    ))
+}
+
+fn native_root_store() -> RootCertStore {
     let mut root_store = RootCertStore::empty();
     let rustls_native_certs::CertificateResult { certs, errors, .. } =
         rustls_native_certs::load_native_certs();
@@ -234,6 +262,16 @@ fn maybe_build_rustls_client_config_with_env(
         );
     }
     let _ = root_store.add_parsable_certificates(certs);
+    root_store
+}
+
+fn add_custom_ca_to_root_store(
+    env_source: &dyn EnvSource,
+    root_store: &mut RootCertStore,
+) -> Result<(), BuildCustomCaTransportError> {
+    let Some(bundle) = env_source.configured_ca_bundle() else {
+        return Ok(());
+    };
 
     let certificates = bundle.load_certificates()?;
     for (idx, cert) in certificates.into_iter().enumerate() {
@@ -253,12 +291,7 @@ fn maybe_build_rustls_client_config_with_env(
             });
         }
     }
-
-    Ok(Some(Arc::new(
-        ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    )))
+    Ok(())
 }
 
 /// Builds a reqwest client using an injected environment source and reqwest builder.

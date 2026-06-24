@@ -1949,6 +1949,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
  "tokio-test",
  "tokio-tungstenite",
  "tokio-util",

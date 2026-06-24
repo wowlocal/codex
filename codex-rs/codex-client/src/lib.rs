@@ -21,6 +21,7 @@ pub use crate::custom_ca::BuildCustomCaTransportError;
 #[doc(hidden)]
 pub use crate::custom_ca::build_reqwest_client_for_subprocess_tests;
 pub use crate::custom_ca::build_reqwest_client_with_custom_ca;
+pub use crate::custom_ca::build_rustls_client_config_with_custom_ca;
 pub use crate::custom_ca::maybe_build_rustls_client_config_with_custom_ca;
 pub use crate::default_client::CodexHttpClient;
 pub use crate::default_client::CodexRequestBuilder;
@@ -30,7 +31,9 @@ pub use crate::outbound_proxy::BuildRouteAwareHttpClientError;
 pub use crate::outbound_proxy::ClientRouteClass;
 pub use crate::outbound_proxy::OutboundProxyConfig;
 pub use crate::outbound_proxy::RouteFailureClass;
+pub use crate::outbound_proxy::WebSocketProxyDecision;
 pub use crate::outbound_proxy::build_reqwest_client_for_route;
+pub use crate::outbound_proxy::resolve_websocket_proxy;
 pub use crate::request::EncodedJsonBody;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;

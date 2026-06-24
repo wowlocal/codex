@@ -137,6 +137,138 @@ pub fn build_reqwest_client_for_route(
     build_reqwest_client_with_custom_ca(builder).map_err(Into::into)
 }
 
+/// Outbound route resolved for a WebSocket (`ws://`/`wss://`) connection.
+///
+/// WebSocket connections are established by tungstenite rather than reqwest, so the caller
+/// receives the resolved decision and applies it to its own connector instead of a
+/// [`reqwest::ClientBuilder`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSocketProxyDecision {
+    /// Connect directly, bypassing any proxy.
+    Direct,
+    /// Tunnel the connection through this proxy URL (for example `http://host:port` or
+    /// `https://host:port`).
+    Proxy { url: String },
+    /// Defer to the transport's built-in environment-variable proxy handling
+    /// (`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY`). Used when no proxy applies or when the
+    /// configured proxy uses a scheme the transport already supports natively.
+    UseEnvironment,
+}
+
+/// Resolves the outbound proxy route for a WebSocket URL using the same
+/// system-discovery-first policy as [`build_reqwest_client_for_route`].
+///
+/// The `ws`/`wss` scheme is mapped to `http`/`https` before resolution so platform
+/// resolvers and PAC scripts treat the request the same way as the equivalent HTTP(S)
+/// traffic. When system resolution is disabled or has no answer, environment variables are
+/// consulted: `http`/`socks5`/`socks5h` proxies (and the no-proxy case) return
+/// [`WebSocketProxyDecision::UseEnvironment`] so the transport's own handling applies, while
+/// `https` (TLS-to-proxy) and scheme-less `host:port` proxies — which the transport's parser
+/// rejects — are resolved here into an explicit [`WebSocketProxyDecision::Proxy`].
+pub fn resolve_websocket_proxy(
+    request_url: &str,
+    config: Option<&OutboundProxyConfig>,
+) -> WebSocketProxyDecision {
+    resolve_websocket_proxy_with(request_url, config, &ProcessEnv, resolve_system_proxy)
+}
+
+fn resolve_websocket_proxy_with(
+    request_url: &str,
+    config: Option<&OutboundProxyConfig>,
+    env: &dyn EnvSource,
+    resolve_system_proxy: impl FnOnce(&str, &RequestOrigin) -> SystemProxyDecision,
+) -> WebSocketProxyDecision {
+    let Some(http_url) = websocket_url_as_http(request_url) else {
+        return WebSocketProxyDecision::UseEnvironment;
+    };
+    let Some(origin) = RequestOrigin::parse(&http_url) else {
+        return WebSocketProxyDecision::UseEnvironment;
+    };
+    if config.is_some() {
+        match resolve_system_proxy(&http_url, &origin) {
+            SystemProxyDecision::Direct => return WebSocketProxyDecision::Direct,
+            SystemProxyDecision::Proxy { url } => return WebSocketProxyDecision::Proxy { url },
+            SystemProxyDecision::Unavailable { .. } => {}
+        }
+    }
+    env_websocket_proxy_decision(env, &origin)
+}
+
+/// Resolves the WebSocket proxy decision from environment variables.
+///
+/// Only the schemes the transport cannot handle itself (`https` and scheme-less `host:port`)
+/// are resolved into a [`WebSocketProxyDecision::Proxy`]; everything else defers to the
+/// transport via [`WebSocketProxyDecision::UseEnvironment`].
+fn env_websocket_proxy_decision(
+    env: &dyn EnvSource,
+    origin: &RequestOrigin,
+) -> WebSocketProxyDecision {
+    let Some(raw) = env_proxy_for_origin(env, origin) else {
+        return WebSocketProxyDecision::UseEnvironment;
+    };
+    match proxy_url_scheme(&raw).as_deref() {
+        // `https` (TLS-to-proxy) and scheme-less `host:port` are rejected by the transport's
+        // env parser, so resolve them here (honoring `NO_PROXY`).
+        Some("https") => {
+            if no_proxy_bypasses(env, origin) {
+                WebSocketProxyDecision::Direct
+            } else {
+                WebSocketProxyDecision::Proxy {
+                    url: raw.trim().to_string(),
+                }
+            }
+        }
+        None => {
+            if no_proxy_bypasses(env, origin) {
+                WebSocketProxyDecision::Direct
+            } else {
+                WebSocketProxyDecision::Proxy {
+                    url: format!("http://{}", raw.trim()),
+                }
+            }
+        }
+        // `http`/`socks5`/`socks5h` (and any unknown scheme) are left to the transport's own
+        // environment handling, which already supports them and honors `NO_PROXY`.
+        _ => WebSocketProxyDecision::UseEnvironment,
+    }
+}
+
+fn env_proxy_for_origin(env: &dyn EnvSource, origin: &RequestOrigin) -> Option<String> {
+    match origin.scheme.as_str() {
+        "https" => proxy_env_value(env, "HTTPS_PROXY")
+            .or_else(|| proxy_env_value(env, "HTTP_PROXY"))
+            .or_else(|| proxy_env_value(env, "ALL_PROXY")),
+        "http" => proxy_env_value(env, "HTTP_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY")),
+        _ => proxy_env_value(env, "ALL_PROXY"),
+    }
+}
+
+fn no_proxy_bypasses(env: &dyn EnvSource, origin: &RequestOrigin) -> bool {
+    proxy_env_value(env, "NO_PROXY")
+        .is_some_and(|no_proxy| no_proxy_matches_origin(&no_proxy, origin))
+}
+
+/// Returns the lowercased scheme of a proxy URL, or `None` when it has no `scheme://` prefix
+/// (a scheme-less `host:port` value).
+fn proxy_url_scheme(value: &str) -> Option<String> {
+    let (scheme, _) = value.trim().split_once("://")?;
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Rewrites a `ws://`/`wss://` URL to its `http://`/`https://` equivalent for proxy
+/// resolution. `http`/`https` URLs are returned unchanged; other schemes yield `None`.
+fn websocket_url_as_http(request_url: &str) -> Option<String> {
+    let uri = request_url.parse::<http::Uri>().ok()?;
+    let mapped = match uri.scheme_str()?.to_ascii_lowercase().as_str() {
+        "wss" => "https",
+        "ws" => "http",
+        "http" | "https" => return Some(request_url.to_string()),
+        _ => return None,
+    };
+    let (_, rest) = request_url.split_once("://")?;
+    Some(format!("{mapped}://{rest}"))
+}
+
 fn configure_proxy_for_route(
     env: &dyn EnvSource,
     builder: reqwest::ClientBuilder,
@@ -346,7 +478,6 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     request_url.to_string()
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
     no_proxy
         .split(',')
@@ -355,7 +486,6 @@ fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
         .any(|entry| no_proxy_entry_matches_origin(entry, origin))
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     if entry == "*" {
         return true;
@@ -396,7 +526,6 @@ fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     origin.host == entry
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     let mut remaining = host;
     let mut first = true;
