@@ -212,10 +212,7 @@ impl HostState {
                     Ok(started) => {
                         let cell_id = started.cell_id.clone();
                         self.respond(request_id, Ok(HostResponse::ExecutionStarted { cell_id }));
-                        self.peer.send(HostToClient::InitialResponse {
-                            id: request_id,
-                            result: WireResult::from_result(started.initial_response().await),
-                        });
+                        self.peer.start_cell(session_id, request_id, started);
                     }
                     Err(err) => self.respond(request_id, Err(err)),
                 }
