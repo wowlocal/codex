@@ -78,7 +78,7 @@ async fn handle_host_message(state: Arc<ConnectionState>, message: HostToClient)
                     .await;
                 return;
             };
-            let cancellation = CancellationToken::new();
+            let cancellation = state.cancellation.child_token();
             state
                 .delegate_cancellations
                 .lock()
@@ -128,3 +128,7 @@ async fn handle_host_message(state: Arc<ConnectionState>, message: HostToClient)
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reader_tests.rs"]
+mod tests;
