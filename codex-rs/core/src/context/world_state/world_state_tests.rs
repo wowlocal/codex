@@ -38,3 +38,31 @@ fn snapshot_uses_stable_section_ids_and_omits_null_fields() {
         json!({"test": {"value": "current"}})
     );
 }
+
+#[test]
+fn snapshot_merge_patch_changes_and_removes_nested_values() {
+    let previous = WorldStateSnapshot {
+        sections: BTreeMap::from([
+            (
+                "kept".to_string(),
+                json!({"same": true, "changed": "before", "removed": true}),
+            ),
+            ("removed_section".to_string(), json!({"value": true})),
+        ]),
+    };
+    let current = WorldStateSnapshot {
+        sections: BTreeMap::from([(
+            "kept".to_string(),
+            json!({"same": true, "changed": "after"}),
+        )]),
+    };
+
+    assert_eq!(
+        current.merge_patch_from(&previous),
+        Some(json!({
+            "kept": {"changed": "after", "removed": null},
+            "removed_section": null,
+        }))
+    );
+    assert_eq!(current.merge_patch_from(&current), None);
+}
