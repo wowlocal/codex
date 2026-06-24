@@ -326,6 +326,8 @@ pub use windows_impl::run_windows_sandbox_legacy_preflight;
 #[cfg(target_os = "windows")]
 pub use winutil::quote_windows_arg;
 #[cfg(target_os = "windows")]
+pub use winutil::resolve_windows_executable;
+#[cfg(target_os = "windows")]
 pub use winutil::string_from_sid_bytes;
 #[cfg(target_os = "windows")]
 pub use winutil::to_wide;
@@ -360,6 +362,7 @@ mod windows_impl {
     use super::spawn_prep::prepare_legacy_session_security;
     use super::spawn_prep::prepare_legacy_spawn_context;
     use super::spawn_prep::root_capability_sids;
+    use super::winutil::resolve_windows_executable;
     use anyhow::Result;
     use codex_protocol::models::PermissionProfile;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -557,11 +560,16 @@ mod windows_impl {
                 write_root_sids: &security.write_root_sids,
             },
         )?;
+        let program = command
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("cannot start an empty Windows command"))?;
+        let application_path = resolve_windows_executable(program, cwd, &env_map)?;
         let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
         let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
         let spawn_res = unsafe {
             create_process_as_user(
                 security.h_token,
+                &application_path,
                 &command,
                 cwd,
                 &env_map,

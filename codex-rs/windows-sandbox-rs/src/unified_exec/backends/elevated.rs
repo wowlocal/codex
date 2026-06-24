@@ -97,6 +97,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
 
     let spawn_request = SpawnRequest {
         command: command.clone(),
+        application_path: elevated.application_path.clone(),
         cwd: cwd.to_path_buf(),
         env: env_map.clone(),
         permission_profile: permission_profile.clone(),
@@ -113,6 +114,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
     let cwd = cwd.to_path_buf();
     let sandbox_creds = elevated.sandbox_creds;
     let logs_base_dir = elevated.logs_base_dir.clone();
+    let read_roots = elevated.read_roots;
     let transport = match spawn_runner_transport_task(
         codex_home.clone(),
         cwd.clone(),
@@ -129,7 +131,8 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
                 &cwd,
                 &env_map,
                 &codex_home,
-                read_roots_override,
+                Some(&read_roots),
+                Some(spawn_request.application_path.as_path()),
                 read_roots_include_platform_defaults,
                 write_roots_override,
                 &deny_read_paths_override,
