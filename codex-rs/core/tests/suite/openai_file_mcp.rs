@@ -5,6 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_exec_server::FILE_READ_CHUNK_SIZE;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_utils_path_uri::PathUri;
@@ -40,7 +41,9 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const STREAMED_FILE_SIZE: usize = 13 * 1024 * 1024;
+// Exercise multiple remote file-stream blocks while keeping the base64-encoded
+// fs/writeFile fixture request below the exec-server WebSocket frame limit.
+const STREAMED_FILE_SIZE: usize = FILE_READ_CHUNK_SIZE * 2 + 17;
 
 fn write_post_tool_use_hook(home: &Path) -> Result<()> {
     let script_path = home.join("post_tool_use_hook.py");
@@ -190,7 +193,6 @@ async fn codex_apps_file_params_upload_environment_files_before_mcp_tool_call() 
 
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount(&server).await?;
-    mount_file_upload_mocks(&server, STREAMED_FILE_SIZE as u64).await;
 
     let mut builder = apps_enabled_builder(apps_server.chatgpt_base_url.clone())
         .with_workspace_setup(|cwd, fs| async move {
@@ -204,6 +206,7 @@ async fn codex_apps_file_params_upload_environment_files_before_mcp_tool_call() 
             Ok(())
         });
     let test = builder.build_with_auto_env(&server).await?;
+    mount_file_upload_mocks(&server, STREAMED_FILE_SIZE as u64).await;
     let mock = run_extract_turn(&test, &server).await?;
 
     let requests = mock.requests();

@@ -35,6 +35,8 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TestTargetOs;
+use core_test_support::is_bwrap_exec_test_environment;
+use core_test_support::is_remote_test_environment;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_apply_patch_custom_tool_call;
 use core_test_support::responses::ev_assistant_message;
@@ -849,11 +851,22 @@ fn assert_normalized_path_rejected(error: &std::io::Error) {
 }
 
 fn remote_exec(script: &str) -> Result<()> {
-    let container_name = test_docker_container_name()
-        .context("test requires direct access to the Docker container")?;
-    let output = Command::new("docker")
-        .args(["exec", container_name.as_str(), "sh", "-lc", script])
-        .output()?;
+    anyhow::ensure!(
+        is_remote_test_environment() && test_target_os() == TestTargetOs::Linux,
+        "direct POSIX remote setup requires a Linux remote environment"
+    );
+    let output = match test_docker_container_name() {
+        Some(container_name) => Command::new("docker")
+            .args(["exec", container_name.as_str(), "sh", "-lc", script])
+            .output()?,
+        None => {
+            anyhow::ensure!(
+                is_bwrap_exec_test_environment(),
+                "direct setup is unavailable for this Linux remote environment"
+            );
+            Command::new("sh").args(["-lc", script]).output()?
+        }
+    };
     assert!(
         output.status.success(),
         "remote exec failed: stdout={} stderr={}",
@@ -861,6 +874,35 @@ fn remote_exec(script: &str) -> Result<()> {
         String::from_utf8_lossy(&output.stderr).trim(),
     );
     Ok(())
+}
+
+fn remote_readlink(path: &std::path::Path) -> Result<String> {
+    anyhow::ensure!(
+        is_remote_test_environment() && test_target_os() == TestTargetOs::Linux,
+        "POSIX readlink requires a Linux remote environment"
+    );
+    let path = path
+        .to_str()
+        .context("remote readlink path should be utf-8")?;
+    let output = match test_docker_container_name() {
+        Some(container_name) => Command::new("docker")
+            .args(["exec", container_name.as_str(), "readlink", path])
+            .output()?,
+        None => {
+            anyhow::ensure!(
+                is_bwrap_exec_test_environment(),
+                "readlink is unavailable for this Linux remote environment"
+            );
+            Command::new("readlink").arg(path).output()?
+        }
+    };
+    assert!(
+        output.status.success(),
+        "readlink failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim(),
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 async fn exec_command_routing_output(
@@ -899,7 +941,7 @@ async fn exec_command_routing_output(
 async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -938,7 +980,7 @@ async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
         &server,
         "call-multi-env",
         json!({
-            "shell": "/bin/sh",
+            "shell": "bash",
             "cmd": format!("cat {remote_marker_name}"),
             "login": false,
             "yield_time_ms": 1_000,
@@ -974,7 +1016,7 @@ async fn exec_command_routes_to_selected_remote_environment() -> Result<()> {
 async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result<()> {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1061,7 +1103,7 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
                     "exec-call",
                     "exec_command",
                     &json!({
-                        "shell": "/bin/sh",
+                        "shell": "bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 1_000,
@@ -1179,7 +1221,7 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
 async fn apply_patch_freeform_routes_to_selected_remote_environment() -> Result<()> {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1265,7 +1307,7 @@ async fn apply_patch_freeform_routes_to_selected_remote_environment() -> Result<
 async fn apply_patch_approvals_are_remembered_per_environment() -> Result<()> {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1454,7 +1496,7 @@ async fn apply_patch_intercepted_exec_command_routes_to_selected_remote_environm
 {
     skip_if_no_network!(Ok(()));
     // TODO(anp): Remove after remote path fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_remote_env!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1488,7 +1530,7 @@ async fn apply_patch_intercepted_exec_command_routes_to_selected_remote_environm
                     call_id,
                     "exec_command",
                     &serde_json::to_string(&json!({
-                        "shell": "/bin/sh",
+                        "shell": "bash",
                         "cmd": command,
                         "login": false,
                         "yield_time_ms": 5_000,
@@ -1548,7 +1590,7 @@ async fn apply_patch_intercepted_exec_command_routes_to_selected_remote_environm
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_test_env_sandboxed_read_allows_readable_root() -> Result<()> {
     // TODO(anp): Remove after remote sandbox fixtures use target-native paths.
-    skip_if_target_windows!(Ok(()), "requires the Docker-backed POSIX executor");
+    skip_if_target_windows!(Ok(()), "requires a POSIX executor");
     skip_if_no_network!(Ok(()));
     skip_if_no_remote_env!(Ok(()));
 
@@ -1736,27 +1778,9 @@ async fn remote_test_env_copy_preserves_symlink_source() -> Result<()> {
         )
         .await?;
 
-    let container_name = test_docker_container_name()
-        .context("test requires direct access to the Docker container")?;
-    let link_target = Command::new("docker")
-        .args([
-            "exec",
-            container_name.as_str(),
-            "readlink",
-            copied_symlink
-                .to_str()
-                .context("copied symlink path should be utf-8")?,
-        ])
-        .output()?;
-    assert!(
-        link_target.status.success(),
-        "readlink failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&link_target.stdout).trim(),
-        String::from_utf8_lossy(&link_target.stderr).trim(),
-    );
     assert_eq!(
-        String::from_utf8_lossy(&link_target.stdout).trim(),
-        outside_file.to_string_lossy()
+        remote_readlink(&copied_symlink)?,
+        outside_file.to_string_lossy().into_owned()
     );
 
     file_system

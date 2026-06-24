@@ -47,6 +47,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_utils_cargo_bin::cargo_bin;
 use codex_utils_path_uri::PathUri;
+use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::is_remote_test_environment;
 use core_test_support::responses;
@@ -61,6 +62,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_docker_container_name;
+use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use image::DynamicImage;
@@ -307,9 +309,17 @@ fn stdio_transport_with_cwd(
 fn insert_mcp_server(
     config: &mut Config,
     server_name: &str,
-    transport: McpServerTransportConfig,
+    mut transport: McpServerTransportConfig,
     options: TestMcpServerOptions,
 ) {
+    if options.environment_id == REMOTE_MCP_ENVIRONMENT
+        && is_remote_test_environment()
+        && test_target_os() == TestTargetOs::Linux
+        && let McpServerTransportConfig::Stdio { cwd, .. } = &mut transport
+        && cwd.is_none()
+    {
+        *cwd = Some(LegacyAppPathString::from_path(Path::new("/tmp")));
+    }
     let mut servers = config.mcp_servers.get().clone();
     servers.insert(
         server_name.to_string(),

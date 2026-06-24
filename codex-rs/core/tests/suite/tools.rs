@@ -442,10 +442,6 @@ async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
         .parse::<i32>()
         .context("exit code is integer")?;
 
-    assert_ne!(
-        exit_code, 0,
-        "glob deny-read should surface a non-zero exit code"
-    );
     assert!(
         output_text.contains(allowed),
         "expected allowed file contents in shell output: {output_text}"
@@ -458,10 +454,21 @@ async fn shell_command_enforces_glob_deny_read_policy() -> Result<()> {
     let has_denial = output_lower.contains("permission denied")
         || output_lower.contains("operation not permitted")
         || output_lower.contains("read-only file system");
-    assert!(
-        has_denial,
-        "expected sandbox denial details in shell output: {output_text}"
-    );
+    if exit_code == 0 && cfg!(target_os = "linux") {
+        // Linux bwrap can enforce deny-read by replacing an existing file
+        // with an empty bind mount. The read succeeds, but protected content
+        // remains unavailable.
+        assert!(
+            !has_denial,
+            "successful masked read should not report a denial: {output_text}"
+        );
+    } else {
+        assert_ne!(exit_code, 0, "glob deny-read should fail on this backend");
+        assert!(
+            has_denial,
+            "expected sandbox denial details in shell output: {output_text}"
+        );
+    }
 
     Ok(())
 }

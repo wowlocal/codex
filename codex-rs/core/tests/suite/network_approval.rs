@@ -226,7 +226,6 @@ async fn mount_exec_network_turn(
 
 fn network_fetch_args(environment_id: &str) -> Value {
     json!({
-        "shell": "/bin/sh",
         "cmd": format!("python3 -c \"import urllib.request; opener = urllib.request.build_opener(urllib.request.ProxyHandler()); print('OK:' + opener.open('http://{NETWORK_TEST_HOST}', timeout=2).read().decode(errors='replace'))\""),
         "login": false,
         "yield_time_ms": 1_000,

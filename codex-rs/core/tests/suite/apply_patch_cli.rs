@@ -1592,16 +1592,14 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     let mut builder = test_codex();
     let test = builder.build_with_remote_and_local_env(&server).await?;
     let file_name = "shared-turn-diff.txt";
-    let shared_cwd = PathBuf::from(format!(
-        "/tmp/codex-remote-turn-diff-{}",
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
-    ))
-    .abs();
-    let shared_cwd_uri = PathUri::from_host_native_path(&shared_cwd)?;
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
+    let fixture_id = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let local_cwd = PathBuf::from(format!("/tmp/codex-local-turn-diff-{fixture_id}")).abs();
+    let remote_cwd = PathBuf::from(format!("/tmp/codex-remote-turn-diff-{fixture_id}")).abs();
+    let remote_cwd_uri = PathUri::from_host_native_path(&remote_cwd)?;
+    let _ = fs::remove_dir_all(local_cwd.as_path());
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,
@@ -1609,10 +1607,10 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
             /*sandbox*/ None,
         )
         .await?;
-    fs::create_dir_all(shared_cwd.as_path())?;
+    fs::create_dir_all(local_cwd.as_path())?;
     test.fs()
         .create_directory(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             CreateDirectoryOptions { recursive: true },
             /*sandbox*/ None,
         )
@@ -1649,10 +1647,10 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     let environments = vec![
-        local(shared_cwd.clone()),
+        local(local_cwd.clone()),
         TurnEnvironmentSelection {
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-            cwd: PathUri::from_abs_path(&shared_cwd),
+            cwd: PathUri::from_abs_path(&remote_cwd),
         },
     ];
     test.codex
@@ -1696,11 +1694,11 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     })
     .await;
 
-    assert_eq!(fs::read_to_string(shared_cwd.join(file_name))?, "local\n");
+    assert_eq!(fs::read_to_string(local_cwd.join(file_name))?, "local\n");
     assert_eq!(
         test.fs()
             .read_file_text(
-                &PathUri::from_host_native_path(shared_cwd.join(file_name))?,
+                &PathUri::from_host_native_path(remote_cwd.join(file_name))?,
                 /*sandbox*/ None,
             )
             .await?,
@@ -1726,10 +1724,10 @@ index 0000000000000000000000000000000000000000..9c998f7b995a7327177b38a90d138517
 "#
     );
 
-    let _ = fs::remove_dir_all(shared_cwd.as_path());
+    let _ = fs::remove_dir_all(local_cwd.as_path());
     test.fs()
         .remove(
-            &shared_cwd_uri,
+            &remote_cwd_uri,
             RemoveOptions {
                 recursive: true,
                 force: true,

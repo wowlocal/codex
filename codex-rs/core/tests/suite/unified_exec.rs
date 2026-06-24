@@ -2689,23 +2689,23 @@ async fn unified_exec_streams_after_lagged_output() -> Result<()> {
     });
     let test = builder.build_with_auto_env(&server).await?;
 
-    let script = r#"python3 - <<'PY'
+    let script = r#"python3 -c '
 import sys
 import time
 
-chunk = b'long content here to trigger truncation' * (1 << 10)
+chunk = b"long content here to trigger truncation" * (1 << 10)
 for _ in range(4):
     sys.stdout.buffer.write(chunk)
     sys.stdout.flush()
 
-time.sleep(0.2)
+sys.stdin.readline()
 for _ in range(5):
     sys.stdout.write("TAIL-MARKER\n")
     sys.stdout.flush()
     time.sleep(0.05)
 
-time.sleep(0.2)
-PY
+sys.stdin.readline()
+'
 "#;
 
     let first_call_id = "uexec-lag-start";
@@ -2715,8 +2715,15 @@ PY
         "tty": true,
     });
 
-    let second_call_id = "uexec-lag-poll";
+    let second_call_id = "uexec-lag-release";
     let second_args = serde_json::json!({
+        "chars": "continue\n",
+        "session_id": 1000,
+        "yield_time_ms": 2_000,
+    });
+
+    let third_call_id = "uexec-lag-poll";
+    let third_args = serde_json::json!({
         "chars": "",
         "session_id": 1000,
         "yield_time_ms": 2_000,
@@ -2742,8 +2749,17 @@ PY
             ev_completed("resp-2"),
         ]),
         sse(vec![
-            ev_assistant_message("msg-1", "lag handled"),
+            ev_response_created("resp-3"),
+            ev_function_call(
+                third_call_id,
+                "write_stdin",
+                &serde_json::to_string(&third_args)?,
+            ),
             ev_completed("resp-3"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "lag handled"),
+            ev_completed("resp-4"),
         ]),
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
@@ -2777,12 +2793,16 @@ PY
     );
 
     let poll_output = outputs
-        .get(second_call_id)
+        .get(third_call_id)
         .expect("missing poll unified_exec output");
+    let release_output = outputs
+        .get(second_call_id)
+        .expect("missing release unified_exec output");
+    let release_text = release_output.output.as_str();
     let poll_text = poll_output.output.as_str();
     assert!(
-        poll_text.contains("TAIL-MARKER"),
-        "expected poll output to contain tail marker, got {poll_text:?}"
+        release_text.contains("TAIL-MARKER") || poll_text.contains("TAIL-MARKER"),
+        "expected follow-up output to contain tail marker; release: {release_text:?}, poll: {poll_text:?}"
     );
 
     Ok(())
@@ -3160,10 +3180,6 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
     let output = outputs.get(call_id).expect("missing output");
 
     assert!(
-        output.exit_code.is_some_and(|code| code != 0),
-        "glob deny-read should surface a non-zero exit code: {output:?}"
-    );
-    assert!(
         output.output.contains(allowed),
         "expected allowed file contents in unified exec output: {output:?}"
     );
@@ -3175,10 +3191,24 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
     let has_denial = output_lower.contains("permission denied")
         || output_lower.contains("operation not permitted")
         || output_lower.contains("read-only file system");
-    assert!(
-        has_denial,
-        "expected sandbox denial details in unified exec output: {output:?}"
-    );
+    let exit_code = output
+        .exit_code
+        .context("glob deny-read command should have completed")?;
+    if exit_code == 0 && cfg!(target_os = "linux") {
+        // Linux bwrap can enforce deny-read by replacing an existing file
+        // with an empty bind mount. The read succeeds, but protected content
+        // remains unavailable.
+        assert!(
+            !has_denial,
+            "successful masked read should not report a denial: {output:?}"
+        );
+    } else {
+        assert_ne!(exit_code, 0, "glob deny-read should fail on this backend");
+        assert!(
+            has_denial,
+            "expected sandbox denial details in unified exec output: {output:?}"
+        );
+    }
 
     Ok(())
 }
