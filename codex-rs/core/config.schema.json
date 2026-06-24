@@ -568,6 +568,9 @@
             "non_prefixed_mcp_tool_names": {
               "type": "boolean"
             },
+            "parallel_reasoning_summaries": {
+              "type": "boolean"
+            },
             "personality": {
               "type": "boolean"
             },
@@ -4877,6 +4880,9 @@
           "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
         },
         "non_prefixed_mcp_tool_names": {
+          "type": "boolean"
+        },
+        "parallel_reasoning_summaries": {
           "type": "boolean"
         },
         "personality": {
