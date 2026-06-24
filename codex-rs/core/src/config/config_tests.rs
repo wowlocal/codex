@@ -11212,3 +11212,43 @@ fn test_tui_notification_condition_rejects_unknown_value() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn parse_startup_env_reads_env_table_and_ignores_other_keys() {
+    let toml = r#"
+model = "gpt-test"
+
+[env]
+HTTPS_PROXY = "https://proxy.test:443"
+NO_PROXY = "localhost"
+
+[features]
+respect_system_proxy = true
+"#;
+    let env = super::parse_startup_env(toml).expect("parse [env]");
+    assert_eq!(
+        env.get("HTTPS_PROXY").map(String::as_str),
+        Some("https://proxy.test:443")
+    );
+    assert_eq!(env.get("NO_PROXY").map(String::as_str), Some("localhost"));
+    assert_eq!(env.len(), 2);
+}
+
+#[test]
+fn parse_startup_env_defaults_to_empty_when_table_absent() {
+    let env = super::parse_startup_env("model = \"gpt-test\"\n").expect("parse");
+    assert!(env.is_empty());
+}
+
+#[test]
+fn startup_env_to_apply_skips_variables_already_present() {
+    let mut env = std::collections::BTreeMap::new();
+    env.insert("HTTPS_PROXY".to_string(), "https://from-config".to_string());
+    env.insert("NO_PROXY".to_string(), "localhost".to_string());
+    // HTTPS_PROXY is already set in the environment, so only NO_PROXY is applied.
+    let to_apply = super::startup_env_to_apply(env, |key| key == "HTTPS_PROXY");
+    assert_eq!(
+        to_apply,
+        vec![("NO_PROXY".to_string(), "localhost".to_string())]
+    );
+}

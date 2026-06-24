@@ -954,6 +954,16 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Apply the `[env]` table from config.toml before the async runtime starts, so variables
+    // such as HTTP(S)_PROXY/NO_PROXY are visible to every client built later. Doing this here
+    // keeps `set_var` on the single-threaded startup path.
+    if let Ok(codex_home) = codex_core::config::find_codex_home() {
+        // Safety: still single-threaded; the async runtime has not been created yet.
+        if let Err(err) = unsafe { codex_core::config::apply_startup_env(codex_home.as_path()) } {
+            eprintln!("warning: failed to apply [env] from config.toml: {err}");
+        }
+    }
+
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         cli_main(arg0_paths, remote_control_disabled).await?;
