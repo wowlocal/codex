@@ -4348,6 +4348,59 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     codex_utils_home_dir::find_codex_home()
 }
 
+/// Minimal view over `config.toml` that reads only the `[env]` table, ignoring every other
+/// key so it can be parsed at startup without depending on the full config schema.
+#[derive(Debug, Default, Deserialize)]
+struct StartupEnvToml {
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+/// Parses the `[env]` table out of a `config.toml` string.
+fn parse_startup_env(contents: &str) -> std::io::Result<BTreeMap<String, String>> {
+    let parsed: StartupEnvToml = toml::from_str(contents)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(parsed.env)
+}
+
+/// Computes which `[env]` entries should be applied, skipping any variable already present
+/// in the environment so an inherited/shell value always wins.
+fn startup_env_to_apply(
+    env: BTreeMap<String, String>,
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    env.into_iter().filter(|(key, _)| !is_set(key)).collect()
+}
+
+/// Applies the `[env]` table from `<codex_home>/config.toml` to the current process
+/// environment, returning the names of the variables that were set.
+///
+/// Each entry is applied only when the variable is not already present, so an
+/// inherited/shell value takes precedence. A missing `config.toml` is treated as no-op.
+///
+/// # Safety
+///
+/// This mutates the process environment via [`std::env::set_var`], which is not thread-safe.
+/// The caller must invoke it during single-threaded startup, before the async runtime is
+/// created and before any other thread reads or writes the environment.
+pub unsafe fn apply_startup_env(codex_home: &Path) -> std::io::Result<Vec<String>> {
+    let contents = match std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let to_apply = startup_env_to_apply(parse_startup_env(&contents)?, |key| {
+        std::env::var_os(key).is_some()
+    });
+    let mut applied = Vec::with_capacity(to_apply.len());
+    for (key, value) in to_apply {
+        // Safety: upheld by this function's caller contract (single-threaded startup).
+        unsafe { std::env::set_var(&key, &value) };
+        applied.push(key);
+    }
+    Ok(applied)
+}
+
 /// Returns the path to the folder where Codex logs are stored. Does not verify
 /// that the directory exists.
 pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {

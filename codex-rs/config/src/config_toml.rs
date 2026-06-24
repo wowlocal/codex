@@ -185,6 +185,18 @@ pub struct ConfigToml {
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
 
+    /// Environment variables to set in the Codex process itself at startup, before any
+    /// network client is built. This is the way to pin variables such as `HTTPS_PROXY`,
+    /// `HTTP_PROXY`, and `NO_PROXY` without exporting them in your shell.
+    ///
+    /// Each entry is applied only when the variable is not already present in the
+    /// environment, so an inherited/shell value takes precedence. This differs from
+    /// `shell_environment_policy`, which governs the environment passed to shell tools the
+    /// model runs; `env` governs Codex's own process (including its model/API/WebSocket
+    /// traffic).
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
+
     /// Whether the model may request a login shell for shell-based tools.
     /// Default to `true`
     ///
