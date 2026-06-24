@@ -14,10 +14,10 @@ use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
-use crate::agents_md::LoadedAgentsMd;
 use crate::attestation::AttestationProvider;
 use crate::build_available_skills;
 use crate::compact;
+use crate::compact::InitialContextInjection;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::connectors;
@@ -211,7 +211,6 @@ use codex_protocol::exec_output::StreamOutput;
 mod code_mode_warning;
 mod config_lock;
 pub(crate) mod context_window;
-mod environment_refresh;
 mod handlers;
 mod inject;
 mod input_queue;
@@ -309,7 +308,6 @@ pub(crate) struct PreviousTurnSettings {
 #[cfg(test)]
 use crate::SkillMetadata;
 use crate::SkillsService;
-use crate::agents_md::load_project_instructions;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
@@ -632,7 +630,6 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             service_tier,
             developer_instructions: config.developer_instructions.clone(),
-            loaded_agents_md: None,
             personality: config.personality,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
@@ -847,10 +844,11 @@ impl Codex {
     }
 
     pub(crate) async fn instruction_sources(&self) -> Vec<PathUri> {
-        let state = self.session.state.lock().await;
-        state
-            .session_configuration
-            .loaded_agents_md
+        self.session
+            .services
+            .agents_md_manager
+            .get_loaded()
+            .await
             .as_ref()
             .map_or_else(Vec::new, |instructions| instructions.sources().collect())
     }
@@ -1544,13 +1542,7 @@ impl Session {
     }
 
     pub(crate) async fn user_instructions(&self) -> Option<codex_extension_api::UserInstructions> {
-        let state = self.state.lock().await;
-        state
-            .session_configuration
-            .loaded_agents_md
-            .as_deref()
-            .and_then(LoadedAgentsMd::user_instructions)
-            .cloned()
+        self.services.agents_md_manager.user_instructions()
     }
 
     pub(crate) async fn provider(&self) -> ModelProviderInfo {
@@ -2807,70 +2799,23 @@ impl Session {
         &self,
         turn_context: Arc<TurnContext>,
     ) -> Arc<StepContext> {
-        // Keep the old turn-frozen view unless deferred executors are explicitly enabled.
-        let (environments, loaded_agents_md) = if turn_context
+        let deferred_executor_enabled = turn_context
             .config
             .features
-            .enabled(Feature::DeferredExecutor)
-        {
-            // Serialize the snapshot and refresh so request-scoped state cannot drift apart.
-            let Ok(_refresh_guard) = self.environment_refresh.gate.acquire().await else {
-                error!("environment refresh semaphore closed");
-                let loaded_agents_md = self
-                    .state
-                    .lock()
-                    .await
-                    .session_configuration
-                    .loaded_agents_md
-                    .clone();
-                return Arc::new(StepContext::new(
-                    Arc::clone(&turn_context),
-                    turn_context.environments.clone(),
-                    loaded_agents_md,
-                ));
-            };
-            let environments = self.services.turn_environments.snapshot().await;
-            let selections = environments.to_selections();
-            let is_current = {
-                let last_refreshed = self
-                    .environment_refresh
-                    .last_refreshed_selections
-                    .lock()
-                    .await;
-                *last_refreshed == selections
-            };
-            let loaded_agents_md = if is_current {
-                self.state
-                    .lock()
-                    .await
-                    .session_configuration
-                    .loaded_agents_md
-                    .clone()
-            } else {
-                let user_instructions = self.user_instructions().await;
-                let loaded_agents_md = load_project_instructions(
-                    &turn_context.config,
-                    user_instructions,
-                    &environments,
-                )
-                .await
-                .map(Arc::new);
-                self.state
-                    .lock()
-                    .await
-                    .session_configuration
-                    .loaded_agents_md = loaded_agents_md.clone();
-                *self
-                    .environment_refresh
-                    .last_refreshed_selections
-                    .lock()
-                    .await = selections;
-                loaded_agents_md
-            };
-            (environments, loaded_agents_md)
+            .enabled(Feature::DeferredExecutor);
+        // Keep the old turn-frozen environment view unless deferred executors are enabled.
+        let environments = if deferred_executor_enabled {
+            self.services.turn_environments.snapshot().await
         } else {
-            (turn_context.environments.clone(), None)
+            turn_context.environments.clone()
         };
+        if deferred_executor_enabled {
+            self.services
+                .agents_md_manager
+                .refresh(&turn_context.config, &environments)
+                .await;
+        }
+        let loaded_agents_md = self.services.agents_md_manager.get_loaded().await;
         Arc::new(StepContext::new(
             turn_context,
             environments,
@@ -3324,13 +3269,18 @@ impl Session {
                 );
             }
         }
+        // TODO(sayan): Implement WorldState persistence (including AGENTS.md) across
+        // resume, fork, rollback, and compaction. Then delete this direct rendering,
+        // remove the gate in build_world_state_for_step(), and let WorldState render
+        // AGENTS.md for all sessions. Keep calling AgentsMdManager::refresh() only for
+        // deferred executors so flag-off sessions keep their creation-time instructions.
         if !turn_context
             .config
             .features
             .enabled(Feature::DeferredExecutor)
-            && let Some(user_instructions) = turn_context.user_instructions.as_deref()
+            && let Some(loaded_agents_md) = self.services.agents_md_manager.get_loaded().await
         {
-            contextual_user_sections.push(user_instructions.to_string());
+            contextual_user_sections.push(loaded_agents_md.contextual_user_fragment().render());
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
@@ -3480,22 +3430,27 @@ impl Session {
     pub(crate) async fn start_new_context_window(
         &self,
         turn_context: &TurnContext,
-        world_state: Arc<WorldState>,
+        initial_context_injection: InitialContextInjection,
     ) -> u64 {
         let window = {
             let mut state = self.state.lock().await;
             state.start_new_context_window()
         };
         let (window_number, window_ids) = window;
-        let context_items = self
-            .build_initial_context_with_world_state(turn_context, world_state.as_ref())
-            .await;
-        let turn_context_item = turn_context.to_turn_context_item();
+        let (context_items, world_state_baseline) = compact::build_compaction_initial_context(
+            self,
+            turn_context,
+            &initial_context_injection,
+        )
+        .await;
+        let reference_context_item = world_state_baseline
+            .as_ref()
+            .map(|_| turn_context.to_turn_context_item());
         self.replace_compacted_history(
             turn_context,
             context_items,
-            Some(turn_context_item),
-            Some(world_state),
+            reference_context_item,
+            world_state_baseline,
             CompactedItem {
                 message: String::new(),
                 replacement_history: None,

@@ -16,7 +16,6 @@
 //! 3.  We do **not** walk past the project root.
 
 use crate::config::Config;
-use crate::context::ContextualUserFragment;
 use crate::context::UserInstructions as ContextUserInstructions;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_app_server_protocol::ConfigLayerSource;
@@ -399,11 +398,6 @@ impl LoadedAgentsMd {
         output
     }
 
-    /// Returns the complete model-visible contextual user fragment.
-    pub(crate) fn render(&self) -> String {
-        self.contextual_user_fragment().render()
-    }
-
     pub(crate) fn contextual_user_fragment(&self) -> ContextUserInstructions {
         // One contributing project environment retains the legacy cwd wrapper. With two or more,
         // the body labels every contributing environment itself, so the outer cwd is omitted.
@@ -417,11 +411,6 @@ impl LoadedAgentsMd {
             directory,
             text: self.text(),
         }
-    }
-
-    /// Returns the host-provided user instructions.
-    pub(crate) fn user_instructions(&self) -> Option<&UserInstructions> {
-        self.user_instructions.as_ref()
     }
 
     /// Returns the AGENTS.md files that supplied instruction entries.

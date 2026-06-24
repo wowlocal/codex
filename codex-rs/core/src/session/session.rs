@@ -1,7 +1,6 @@
-use super::environment_refresh::EnvironmentRefresh;
 use super::input_queue::InputQueue;
 use super::*;
-use crate::agents_md::LoadedAgentsMd;
+use crate::agents_md_manager::AgentsMdManager;
 use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -30,7 +29,6 @@ pub(crate) struct Session {
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) out_of_band_elicitation_paused: watch::Sender<bool>,
     pub(super) state: Mutex<SessionState>,
-    pub(super) environment_refresh: EnvironmentRefresh,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
@@ -59,10 +57,6 @@ pub(crate) struct SessionConfiguration {
 
     /// Developer instructions that supplement the base instructions.
     pub(super) developer_instructions: Option<String>,
-
-    /// Model instructions assembled from provider instructions and discovered
-    /// AGENTS.md files.
-    pub(super) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
 
     /// Personality preference for the model.
     pub(super) personality: Option<Personality>,
@@ -869,15 +863,10 @@ impl Session {
             ));
             turn_environments.update_selections(session_configuration.environment_selections());
             let resolved_environments = turn_environments.snapshot().await;
-            session_configuration.loaded_agents_md = load_project_instructions(
-                config.as_ref(),
-                user_instructions,
-                &resolved_environments,
-            )
-            .await
-            .map(Arc::new);
-            let last_refreshed_environment_selections =
-                resolved_environments.to_selections();
+            let agents_md_manager = Arc::new(AgentsMdManager::new(user_instructions));
+            agents_md_manager
+                .refresh(config.as_ref(), &resolved_environments)
+                .await;
             let plugin_skill_errors = warm_plugins_and_skills_for_session_init(
                 Arc::clone(&config),
                 Arc::clone(&plugins_manager),
@@ -1045,6 +1034,7 @@ impl Session {
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),
                 skills_service,
+                agents_md_manager,
                 plugins_manager: Arc::clone(&plugins_manager),
                 mcp_manager: Arc::clone(&mcp_manager),
                 extensions,
@@ -1098,9 +1088,6 @@ impl Session {
                 agent_status,
                 out_of_band_elicitation_paused,
                 state: Mutex::new(state),
-                environment_refresh: EnvironmentRefresh::new(
-                    last_refreshed_environment_selections,
-                ),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,

@@ -22,6 +22,11 @@ impl Session {
         };
 
         let mut world_state = WorldState::default();
+        // TODO(sayan): Implement WorldState persistence (including AGENTS.md) across
+        // resume, fork, rollback, and compaction. Then remove this gate, always add
+        // this section, and delete the compatibility path in initial context building.
+        // Keep calling AgentsMdManager::refresh() only for deferred executors so
+        // flag-off sessions continue using their creation-time instructions.
         if turn_context
             .config
             .features

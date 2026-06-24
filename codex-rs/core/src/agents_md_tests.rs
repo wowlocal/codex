@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::ConfigBuilder;
+use crate::context::ContextualUserFragment;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::turn_context::TurnEnvironment;
 use codex_config::ConfigLayerEntry;
@@ -316,7 +317,7 @@ fn foreign_agents_md_uses_environment_native_paths() {
     };
 
     assert_eq!(
-        loaded.render(),
+        loaded.contextual_user_fragment().render(),
         format!(
             "# AGENTS.md instructions for {rendered_cwd}
 
@@ -359,7 +360,7 @@ fn multi_environment_agents_md_renders_mixed_path_conventions() {
     };
 
     assert_eq!(
-        loaded.render(),
+        loaded.contextual_user_fragment().render(),
         r#"# AGENTS.md instructions
 
 <INSTRUCTIONS>
@@ -752,7 +753,10 @@ secondary doc"#,
 {inner}
 </INSTRUCTIONS>"#
     );
-    assert_eq!(loaded.render(), expected_fragment);
+    assert_eq!(
+        loaded.contextual_user_fragment().render(),
+        expected_fragment
+    );
     assert_eq!(
         loaded.sources().collect::<Vec<_>>(),
         vec![
@@ -793,7 +797,10 @@ async fn secondary_only_project_doc_uses_single_contributor_layout() {
         "# AGENTS.md instructions for {}\n\n<INSTRUCTIONS>\n{inner}\n</INSTRUCTIONS>",
         secondary.path().display()
     );
-    assert_eq!(loaded.render(), expected_fragment);
+    assert_eq!(
+        loaded.contextual_user_fragment().render(),
+        expected_fragment
+    );
 }
 
 #[tokio::test]
@@ -819,7 +826,10 @@ async fn primary_only_project_doc_preserves_legacy_layout_with_multiple_bound_en
         "# AGENTS.md instructions for {}\n\n<INSTRUCTIONS>\n{inner}\n</INSTRUCTIONS>",
         primary.path().display()
     );
-    assert_eq!(loaded.render(), expected_fragment);
+    assert_eq!(
+        loaded.contextual_user_fragment().render(),
+        expected_fragment
+    );
 }
 
 #[tokio::test]
@@ -1097,7 +1107,6 @@ async fn instruction_sources_include_global_before_agents_md_docs() {
         }],
     };
     assert_eq!(loaded, expected);
-    assert_eq!(loaded.user_instructions(), cfg.user_instructions.as_ref());
     assert_eq!(
         loaded.sources().collect::<Vec<_>>(),
         vec![

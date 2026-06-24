@@ -1,6 +1,6 @@
-use super::environment_refresh::EnvironmentRefresh;
 use super::turn_context::TurnEnvironment;
 use super::*;
+use crate::agents_md_manager::AgentsMdManager;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
@@ -2709,7 +2709,10 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         Arc::new(build_world_state_from_turn_context(session.as_ref(), &turn_context).await);
 
     session
-        .start_new_context_window(turn_context.as_ref(), world_state)
+        .start_new_context_window(
+            turn_context.as_ref(),
+            InitialContextInjection::BeforeLastUserMessage(world_state),
+        )
         .await;
 
     let live_history = session.clone_history().await;
@@ -3587,7 +3590,6 @@ async fn set_rate_limits_retains_previous_credits() {
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -3695,7 +3697,6 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -4227,7 +4228,6 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -5099,7 +5099,6 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -5231,7 +5230,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -5331,6 +5329,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
+        agents_md_manager: Arc::new(AgentsMdManager::new(/*user_instructions*/ None)),
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
@@ -5415,7 +5414,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
         state: Mutex::new(state),
-        environment_refresh: EnvironmentRefresh::new(turn_context.environments.to_selections()),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
@@ -5479,7 +5477,6 @@ async fn make_session_with_config_and_rx(
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -5587,7 +5584,6 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -7312,7 +7308,6 @@ where
         multi_agent_mode: Default::default(),
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
-        loaded_agents_md: None,
         service_tier: None,
         personality: config.personality,
         base_instructions: config
@@ -7411,6 +7406,7 @@ where
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
         runtime_handle: tokio::runtime::Handle::current(),
         skills_service,
+        agents_md_manager: Arc::new(AgentsMdManager::new(/*user_instructions*/ None)),
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
@@ -7495,7 +7491,6 @@ where
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
         state: Mutex::new(state),
-        environment_refresh: EnvironmentRefresh::new(turn_context.environments.to_selections()),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
