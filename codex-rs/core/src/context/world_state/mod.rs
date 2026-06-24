@@ -1,3 +1,4 @@
+mod agents_md;
 mod environment;
 
 use crate::context::ContextualUserFragment;
@@ -6,6 +7,7 @@ use std::any::Any;
 use std::any::TypeId;
 use std::fmt;
 
+pub(crate) use agents_md::AgentsMdState;
 pub(crate) use environment::EnvironmentsState;
 
 trait ErasedWorldStateSection: Send + Sync {

@@ -211,6 +211,7 @@ use codex_protocol::exec_output::StreamOutput;
 mod code_mode_warning;
 mod config_lock;
 pub(crate) mod context_window;
+mod environment_refresh;
 mod handlers;
 mod inject;
 mod input_queue;
@@ -248,7 +249,6 @@ use self::turn::collect_explicit_app_ids_from_skill_items;
 use self::turn::realtime_text_for_event;
 use self::turn_context::TurnContext;
 use self::turn_context::TurnSkillsContext;
-use self::world_state::build_world_state_from_environment_snapshot;
 use self::world_state::build_world_state_from_turn_context_item;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
@@ -1548,7 +1548,7 @@ impl Session {
         state
             .session_configuration
             .loaded_agents_md
-            .as_ref()
+            .as_deref()
             .and_then(LoadedAgentsMd::user_instructions)
             .cloned()
     }
@@ -2774,17 +2774,14 @@ impl Session {
         self.send_raw_response_items(turn_context, items).await;
     }
 
-    pub(crate) async fn record_step_environment_context_if_changed(
+    pub(crate) async fn record_step_world_state_if_changed(
         &self,
         previous_world_state: &Arc<WorldState>,
         step_context: &step_context::StepContext,
     ) -> Arc<WorldState> {
         let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
-        let world_state = Arc::new(
-            self.build_world_state_for_environments(turn_context, &step_context.environments)
-                .await,
-        );
+        let world_state = Arc::new(self.build_world_state_for_step(step_context).await);
         let items = crate::context_manager::updates::merge_contextual_fragments(
             world_state.render_diff(previous_world_state.as_ref()),
         );
@@ -2801,21 +2798,84 @@ impl Session {
         world_state
     }
 
+    /// Captures one request-scoped view of dynamic state.
+    ///
+    /// This may refresh filesystem-derived state. Normal turns should call it only from
+    /// `run_turn` and pass the result down; standalone request or history boundaries may capture
+    /// their own step.
     pub(crate) async fn capture_step_context(
         &self,
         turn_context: Arc<TurnContext>,
     ) -> Arc<StepContext> {
         // Keep the old turn-frozen view unless deferred executors are explicitly enabled.
-        let environments = if turn_context
+        let (environments, loaded_agents_md) = if turn_context
             .config
             .features
             .enabled(Feature::DeferredExecutor)
         {
-            self.services.turn_environments.snapshot().await
+            // Serialize the snapshot and refresh so request-scoped state cannot drift apart.
+            let Ok(_refresh_guard) = self.environment_refresh.gate.acquire().await else {
+                error!("environment refresh semaphore closed");
+                let loaded_agents_md = self
+                    .state
+                    .lock()
+                    .await
+                    .session_configuration
+                    .loaded_agents_md
+                    .clone();
+                return Arc::new(StepContext::new(
+                    Arc::clone(&turn_context),
+                    turn_context.environments.clone(),
+                    loaded_agents_md,
+                ));
+            };
+            let environments = self.services.turn_environments.snapshot().await;
+            let selections = environments.to_selections();
+            let is_current = {
+                let last_refreshed = self
+                    .environment_refresh
+                    .last_refreshed_selections
+                    .lock()
+                    .await;
+                *last_refreshed == selections
+            };
+            let loaded_agents_md = if is_current {
+                self.state
+                    .lock()
+                    .await
+                    .session_configuration
+                    .loaded_agents_md
+                    .clone()
+            } else {
+                let user_instructions = self.user_instructions().await;
+                let loaded_agents_md = load_project_instructions(
+                    &turn_context.config,
+                    user_instructions,
+                    &environments,
+                )
+                .await
+                .map(Arc::new);
+                self.state
+                    .lock()
+                    .await
+                    .session_configuration
+                    .loaded_agents_md = loaded_agents_md.clone();
+                *self
+                    .environment_refresh
+                    .last_refreshed_selections
+                    .lock()
+                    .await = selections;
+                loaded_agents_md
+            };
+            (environments, loaded_agents_md)
         } else {
-            turn_context.environments.clone()
+            (turn_context.environments.clone(), None)
         };
-        Arc::new(StepContext::new(turn_context, environments))
+        Arc::new(StepContext::new(
+            turn_context,
+            environments,
+            loaded_agents_md,
+        ))
     }
 
     pub(crate) async fn record_inter_agent_communication(
@@ -3061,26 +3121,6 @@ impl Session {
         items
     }
 
-    pub(crate) async fn build_world_state_for_environments(
-        &self,
-        turn_context: &TurnContext,
-        environments: &TurnEnvironmentSnapshot,
-    ) -> WorldState {
-        let environment_subagents = if turn_context.config.include_environment_context {
-            self.services
-                .agent_control
-                .format_environment_context_subagents(self.thread_id)
-                .await
-        } else {
-            String::new()
-        };
-        build_world_state_from_environment_snapshot(
-            turn_context,
-            environments,
-            &environment_subagents,
-        )
-    }
-
     pub(crate) async fn build_initial_context_with_world_state(
         &self,
         turn_context: &TurnContext,
@@ -3284,7 +3324,12 @@ impl Session {
                 );
             }
         }
-        if let Some(user_instructions) = turn_context.user_instructions.as_deref() {
+        if !turn_context
+            .config
+            .features
+            .enabled(Feature::DeferredExecutor)
+            && let Some(user_instructions) = turn_context.user_instructions.as_deref()
+        {
             contextual_user_sections.push(user_instructions.to_string());
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
@@ -3486,8 +3531,9 @@ impl Session {
     #[instrument(level = "trace", skip_all)]
     pub(crate) async fn record_context_updates_and_set_reference_context_item(
         &self,
-        turn_context: &TurnContext,
+        step_context: &StepContext,
     ) -> Arc<WorldState> {
+        let turn_context = step_context.turn.as_ref();
         let reference_context_item = {
             let state = self.state.lock().await;
             state.reference_context_item()
@@ -3495,10 +3541,7 @@ impl Session {
         let turn_context_item = turn_context.to_turn_context_item();
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
-        let world_state = Arc::new(
-            self.build_world_state_for_environments(turn_context, &turn_context.environments)
-                .await,
-        );
+        let world_state = Arc::new(self.build_world_state_for_step(step_context).await);
         let mut context_items = if should_inject_full_context {
             let context_items = self
                 .build_initial_context_with_world_state(turn_context, world_state.as_ref())

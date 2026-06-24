@@ -560,7 +560,7 @@ impl Session {
             developer_instructions: session_configuration.developer_instructions.clone(),
             user_instructions: session_configuration
                 .loaded_agents_md
-                .as_ref()
+                .as_deref()
                 .map(LoadedAgentsMd::render),
             collaboration_mode: session_configuration.collaboration_mode.clone(),
             multi_agent_mode: session_configuration.multi_agent_mode,

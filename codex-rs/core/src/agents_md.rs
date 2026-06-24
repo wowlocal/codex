@@ -401,6 +401,10 @@ impl LoadedAgentsMd {
 
     /// Returns the complete model-visible contextual user fragment.
     pub(crate) fn render(&self) -> String {
+        self.contextual_user_fragment().render()
+    }
+
+    pub(crate) fn contextual_user_fragment(&self) -> ContextUserInstructions {
         // One contributing project environment retains the legacy cwd wrapper. With two or more,
         // the body labels every contributing environment itself, so the outer cwd is omitted.
         let directory = if self.has_multiple_project_environments() {
@@ -413,7 +417,6 @@ impl LoadedAgentsMd {
             directory,
             text: self.text(),
         }
-        .render()
     }
 
     /// Returns the host-provided user instructions.

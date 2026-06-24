@@ -1,3 +1,4 @@
+use super::environment_refresh::EnvironmentRefresh;
 use super::input_queue::InputQueue;
 use super::*;
 use crate::agents_md::LoadedAgentsMd;
@@ -15,7 +16,6 @@ use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadSource;
-use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
@@ -30,6 +30,7 @@ pub(crate) struct Session {
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) out_of_band_elicitation_paused: watch::Sender<bool>,
     pub(super) state: Mutex<SessionState>,
+    pub(super) environment_refresh: EnvironmentRefresh,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
@@ -61,7 +62,7 @@ pub(crate) struct SessionConfiguration {
 
     /// Model instructions assembled from provider instructions and discovered
     /// AGENTS.md files.
-    pub(super) loaded_agents_md: Option<LoadedAgentsMd>,
+    pub(super) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
 
     /// Personality preference for the model.
     pub(super) personality: Option<Personality>,
@@ -873,7 +874,10 @@ impl Session {
                 user_instructions,
                 &resolved_environments,
             )
-            .await;
+            .await
+            .map(Arc::new);
+            let last_refreshed_environment_selections =
+                resolved_environments.to_selections();
             let plugin_skill_errors = warm_plugins_and_skills_for_session_init(
                 Arc::clone(&config),
                 Arc::clone(&plugins_manager),
@@ -1094,6 +1098,9 @@ impl Session {
                 agent_status,
                 out_of_band_elicitation_paused,
                 state: Mutex::new(state),
+                environment_refresh: EnvironmentRefresh::new(
+                    last_refreshed_environment_selections,
+                ),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,
