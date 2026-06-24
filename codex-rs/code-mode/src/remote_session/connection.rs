@@ -203,6 +203,7 @@ impl Connection {
     pub(super) async fn execute(
         &self,
         session_id: SessionId,
+        cell_id: CellId,
         request: ExecuteRequest,
     ) -> Result<StartedCell, String> {
         let id = self.state.next_request_id.fetch_add(1, Ordering::Relaxed);
@@ -220,6 +221,7 @@ impl Connection {
                 id,
                 request: HostRequest::Execute {
                     session_id,
+                    cell_id: cell_id.clone(),
                     request,
                 },
             })
@@ -241,7 +243,9 @@ impl Connection {
             }
         };
         match response {
-            HostResponse::ExecutionStarted { cell_id } => {
+            HostResponse::ExecutionStarted {
+                cell_id: started_cell_id,
+            } if started_cell_id == cell_id => {
                 Ok(StartedCell::from_result_receiver(cell_id, initial_rx))
             }
             _ => {

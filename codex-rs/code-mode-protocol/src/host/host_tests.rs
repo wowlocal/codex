@@ -17,6 +17,7 @@ use super::SessionId;
 use super::SupportedProtocolVersions;
 use super::WireResult;
 use crate::CellId;
+use crate::ExecuteRequest;
 
 fn session_id() -> SessionId {
     SessionId::new("session-1").expect("valid session ID")
@@ -118,13 +119,45 @@ fn session_lifecycle_wire_contract_is_explicit_and_round_trips() {
         (
             ClientToHost::Request {
                 id: 8,
+                request: HostRequest::Execute {
+                    session_id: session_id(),
+                    cell_id: CellId::new("cell-1".to_string()),
+                    request: ExecuteRequest {
+                        tool_call_id: "call-1".to_string(),
+                        enabled_tools: Vec::new(),
+                        source: "text('hello');".to_string(),
+                        yield_time_ms: None,
+                        max_output_tokens: None,
+                    },
+                },
+            },
+            json!({
+                "type": "operation/request",
+                "id": 8,
+                "request": {
+                    "method": "session/execute",
+                    "sessionId": "session-1",
+                    "cellId": "cell-1",
+                    "request": {
+                        "tool_call_id": "call-1",
+                        "enabled_tools": [],
+                        "source": "text('hello');",
+                        "yield_time_ms": null,
+                        "max_output_tokens": null,
+                    },
+                },
+            }),
+        ),
+        (
+            ClientToHost::Request {
+                id: 9,
                 request: HostRequest::ShutdownSession {
                     session_id: session_id(),
                 },
             },
             json!({
                 "type": "operation/request",
-                "id": 8,
+                "id": 9,
                 "request": {
                     "method": "session/shutdown",
                     "sessionId": "session-1",
@@ -166,6 +199,27 @@ fn session_lifecycle_wire_contract_is_explicit_and_round_trips() {
             HostToClient::Response {
                 id: 8,
                 result: WireResult::Ok {
+                    value: HostResponse::ExecutionStarted {
+                        cell_id: CellId::new("cell-1".to_string()),
+                    },
+                },
+            },
+            json!({
+                "type": "operation/response",
+                "id": 8,
+                "result": {
+                    "status": "ok",
+                    "value": {
+                        "type": "execution/started",
+                        "cellId": "cell-1",
+                    },
+                },
+            }),
+        ),
+        (
+            HostToClient::Response {
+                id: 9,
+                result: WireResult::Ok {
                     value: HostResponse::SessionClosed {
                         session_id: session_id(),
                     },
@@ -173,7 +227,7 @@ fn session_lifecycle_wire_contract_is_explicit_and_round_trips() {
             },
             json!({
                 "type": "operation/response",
-                "id": 8,
+                "id": 9,
                 "result": {
                     "status": "ok",
                     "value": {
