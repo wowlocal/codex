@@ -285,3 +285,180 @@ fn system_proxy_cache_key_preserves_url_specific_pac_decisions() {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     assert!(!cache_key.contains(request_url));
 }
+
+/// Panics if invoked: asserts the WebSocket resolver never consults the system proxy for the
+/// case under test (e.g. under `ReqwestDefault`, where env resolution should apply directly).
+fn no_system_proxy(_: &str, _: &RequestOrigin) -> SystemProxyDecision {
+    panic!("system proxy resolution should not run for this case");
+}
+
+#[test]
+fn websocket_env_https_proxy_is_resolved_explicitly() {
+    // `https://` proxies are rejected by tungstenite's env parser, so the resolver must return
+    // an explicit Proxy route the dialer can dial with TLS-to-proxy.
+    let env = MapEnv {
+        values: HashMap::from([(
+            "HTTPS_PROXY".to_string(),
+            "https://proxy.example:8443".to_string(),
+        )]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::ReqwestDefault,
+        &env,
+        no_system_proxy,
+    );
+    assert_eq!(
+        route,
+        OutboundProxyRoute::Proxy {
+            url: "https://proxy.example:8443".to_string(),
+        }
+    );
+}
+
+#[test]
+fn websocket_env_scheme_less_proxy_is_normalized_to_http() {
+    // Scheme-less `host:port` values are also rejected by tungstenite; normalize to `http://`.
+    let env = MapEnv {
+        values: HashMap::from([("HTTPS_PROXY".to_string(), "proxy.example:3128".to_string())]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::ReqwestDefault,
+        &env,
+        no_system_proxy,
+    );
+    assert_eq!(
+        route,
+        OutboundProxyRoute::Proxy {
+            url: "http://proxy.example:3128".to_string(),
+        }
+    );
+}
+
+#[test]
+fn websocket_env_http_proxy_defers_to_transport() {
+    // `http://` proxies work through tungstenite's own env handling, so keep TransportDefault.
+    let env = MapEnv {
+        values: HashMap::from([(
+            "HTTPS_PROXY".to_string(),
+            "http://proxy.example:8080".to_string(),
+        )]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::ReqwestDefault,
+        &env,
+        no_system_proxy,
+    );
+    assert_eq!(route, OutboundProxyRoute::TransportDefault);
+}
+
+#[test]
+fn websocket_env_https_proxy_bypassed_by_no_proxy() {
+    let env = MapEnv {
+        values: HashMap::from([
+            (
+                "HTTPS_PROXY".to_string(),
+                "https://proxy.example:8443".to_string(),
+            ),
+            ("NO_PROXY".to_string(), "api.openai.com".to_string()),
+        ]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::ReqwestDefault,
+        &env,
+        no_system_proxy,
+    );
+    assert_eq!(route, OutboundProxyRoute::Direct);
+}
+
+#[test]
+fn websocket_loopback_host_is_never_proxied() {
+    // Loopback destinations must bypass the proxy even when an env proxy is set, matching the
+    // transport's own loopback handling.
+    let env = MapEnv {
+        values: HashMap::from([(
+            "HTTP_PROXY".to_string(),
+            "https://proxy.example:8443".to_string(),
+        )]),
+    };
+    for url in [
+        "ws://localhost:8080/v1/responses",
+        "ws://127.0.0.1:8080/v1/responses",
+        "ws://[::1]:8080/v1/responses",
+    ] {
+        let route = resolve_websocket_proxy_route(
+            url,
+            OutboundProxyPolicy::ReqwestDefault,
+            &env,
+            no_system_proxy,
+        );
+        assert_eq!(route, OutboundProxyRoute::Direct, "url: {url}");
+    }
+}
+
+#[test]
+fn websocket_no_env_proxy_defers_to_transport() {
+    let env = MapEnv {
+        values: HashMap::new(),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::ReqwestDefault,
+        &env,
+        no_system_proxy,
+    );
+    assert_eq!(route, OutboundProxyRoute::TransportDefault);
+}
+
+#[test]
+fn websocket_system_proxy_takes_precedence_over_env() {
+    // When the system resolver selects a proxy, it wins and env resolution is skipped.
+    let env = MapEnv {
+        values: HashMap::from([(
+            "HTTPS_PROXY".to_string(),
+            "https://env.example:8443".to_string(),
+        )]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::RespectSystemProxy,
+        &env,
+        |_, _| SystemProxyDecision::Proxy {
+            url: "http://system.example:8080".to_string(),
+        },
+    );
+    assert_eq!(
+        route,
+        OutboundProxyRoute::Proxy {
+            url: "http://system.example:8080".to_string(),
+        }
+    );
+}
+
+#[test]
+fn websocket_env_https_proxy_used_when_system_unavailable() {
+    // System resolution unavailable → fall back to env, resolving the `https://` proxy explicitly.
+    let env = MapEnv {
+        values: HashMap::from([(
+            "HTTPS_PROXY".to_string(),
+            "https://proxy.example:8443".to_string(),
+        )]),
+    };
+    let route = resolve_websocket_proxy_route(
+        "wss://api.openai.com/v1/responses",
+        OutboundProxyPolicy::RespectSystemProxy,
+        &env,
+        |_, _| SystemProxyDecision::Unavailable {
+            failure: RouteFailureClass::ProxyResolutionUnavailable,
+        },
+    );
+    assert_eq!(
+        route,
+        OutboundProxyRoute::Proxy {
+            url: "https://proxy.example:8443".to_string(),
+        }
+    );
+}

@@ -55,7 +55,7 @@ impl WebSocketConnector {
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
         let proxy_route = self
             .http_client_factory
-            .resolve_proxy_route(&request.uri().to_string());
+            .resolve_websocket_proxy_route(&request.uri().to_string());
         let (inner, response) =
             dialer::connect(request, config, Arc::clone(&self.tls_config), proxy_route).await?;
         Ok((WebSocketConnection { inner }, response))

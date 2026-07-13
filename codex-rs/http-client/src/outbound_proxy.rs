@@ -158,6 +158,23 @@ impl HttpClientFactory {
         )
     }
 
+    /// Resolves the proxy route for a WebSocket destination.
+    ///
+    /// Behaves like [`HttpClientFactory::resolve_proxy_route`], except that when resolution would
+    /// defer to the transport (`TransportDefault`), the environment proxy for the destination is
+    /// inspected. The WebSocket transport (tungstenite) rejects `https://` (TLS-to-proxy) and
+    /// scheme-less `host:port` proxy values with "Proxy URL scheme not supported", so those are
+    /// resolved here into an explicit [`OutboundProxyRoute::Proxy`] (honoring `NO_PROXY`). `http`
+    /// and `socks` proxies keep `TransportDefault`, since tungstenite handles them itself.
+    pub fn resolve_websocket_proxy_route(&self, request_url: &str) -> OutboundProxyRoute {
+        resolve_websocket_proxy_route(
+            request_url,
+            self.outbound_proxy_policy,
+            &ProcessEnv,
+            resolve_system_proxy,
+        )
+    }
+
     /// Builds a reqwest client for a concrete outbound route.
     pub fn build_reqwest_client(
         &self,
@@ -193,6 +210,102 @@ fn resolve_proxy_route(
         SystemProxyDecision::Proxy { url } => OutboundProxyRoute::Proxy { url },
         SystemProxyDecision::Unavailable { .. } => OutboundProxyRoute::TransportDefault,
     }
+}
+
+fn resolve_websocket_proxy_route(
+    request_url: &str,
+    outbound_proxy_policy: OutboundProxyPolicy,
+    env: &dyn EnvSource,
+    resolve_system_proxy: impl FnOnce(&str, &RequestOrigin) -> SystemProxyDecision,
+) -> OutboundProxyRoute {
+    let base = resolve_proxy_route(request_url, outbound_proxy_policy, resolve_system_proxy);
+    if !matches!(base, OutboundProxyRoute::TransportDefault) {
+        return base;
+    }
+
+    // The base resolution deferred to the transport. tungstenite's environment-proxy parser
+    // rejects `https://` (TLS-to-proxy) and scheme-less `host:port` values, so resolve those
+    // schemes here and let everything else fall through to the transport.
+    let resolution_url = proxy_resolution_url(request_url);
+    let Some(origin) = RequestOrigin::parse(&resolution_url) else {
+        return OutboundProxyRoute::TransportDefault;
+    };
+    websocket_env_proxy_route(env, &origin)
+}
+
+/// Resolves the WebSocket proxy route from environment variables for the schemes the transport
+/// cannot handle itself. `https` and scheme-less `host:port` values become an explicit
+/// [`OutboundProxyRoute::Proxy`] (or [`OutboundProxyRoute::Direct`] when `NO_PROXY` matches); every
+/// other scheme defers to the transport via [`OutboundProxyRoute::TransportDefault`].
+fn websocket_env_proxy_route(env: &dyn EnvSource, origin: &RequestOrigin) -> OutboundProxyRoute {
+    // Loopback destinations are never proxied. Connect directly rather than deferring to the
+    // transport, whose environment-proxy handling would otherwise try (and, for `https`/scheme-less
+    // proxies, fail) to route loopback traffic through the proxy.
+    if is_loopback_host(&origin.host) {
+        return OutboundProxyRoute::Direct;
+    }
+    let Some(raw) = env_proxy_for_origin(env, origin) else {
+        return OutboundProxyRoute::TransportDefault;
+    };
+    match proxy_url_scheme(&raw).as_deref() {
+        // `https` (TLS-to-proxy) and scheme-less `host:port` are rejected by tungstenite's env
+        // parser, so resolve them here, honoring `NO_PROXY`.
+        Some("https") => {
+            if no_proxy_bypasses(env, origin) {
+                OutboundProxyRoute::Direct
+            } else {
+                OutboundProxyRoute::Proxy {
+                    url: raw.trim().to_string(),
+                }
+            }
+        }
+        None => {
+            if no_proxy_bypasses(env, origin) {
+                OutboundProxyRoute::Direct
+            } else {
+                OutboundProxyRoute::Proxy {
+                    url: format!("http://{}", raw.trim()),
+                }
+            }
+        }
+        // `http`/`socks5`/`socks5h` (and any unknown scheme) are handled by tungstenite's own
+        // environment proxy support, which also honors `NO_PROXY`.
+        _ => OutboundProxyRoute::TransportDefault,
+    }
+}
+
+/// Selects the environment proxy value for `origin`, mirroring the HTTP client's per-scheme
+/// selection so WebSocket and HTTP traffic honor the same variables.
+fn env_proxy_for_origin(env: &dyn EnvSource, origin: &RequestOrigin) -> Option<String> {
+    match origin.scheme.as_str() {
+        "https" => {
+            proxy_env_value(env, "HTTPS_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
+        }
+        "http" => proxy_env_value(env, "HTTP_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY")),
+        _ => proxy_env_value(env, "ALL_PROXY"),
+    }
+}
+
+fn no_proxy_bypasses(env: &dyn EnvSource, origin: &RequestOrigin) -> bool {
+    proxy_env_value(env, "NO_PROXY")
+        .is_some_and(|no_proxy| no_proxy_matches_origin(&no_proxy, origin))
+}
+
+/// Returns the lowercased scheme of a proxy URL, or `None` for a scheme-less `host:port` value.
+fn proxy_url_scheme(value: &str) -> Option<String> {
+    let (scheme, _) = value.trim().split_once("://")?;
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Returns true for loopback destinations (`localhost`, `127.0.0.0/8`, `::1`), which must never
+/// be routed through a proxy.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn proxy_resolution_url(request_url: &str) -> Cow<'_, str> {
@@ -486,7 +599,6 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     request_url.to_string()
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
     no_proxy
         .split(',')
@@ -495,7 +607,6 @@ fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
         .any(|entry| no_proxy_entry_matches_origin(entry, origin))
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     if entry == "*" {
         return true;
@@ -536,7 +647,6 @@ fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     origin.host == entry
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     let mut remaining = host;
     let mut first = true;
