@@ -653,7 +653,8 @@ impl RealtimeConversationManager {
             audio_rx,
         };
 
-        let client = RealtimeWebsocketClient::new(api_provider);
+        let client = RealtimeWebsocketClient::new(api_provider)
+            .with_http_client_factory(model_client.http_client_factory().clone());
         let client = match realtime_sideband_base_url {
             Some(base_url) => client.with_webrtc_sideband_base_url(base_url),
             None => client,
