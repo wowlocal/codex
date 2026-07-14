@@ -16,10 +16,13 @@ use crate::endpoint::realtime_websocket::protocol::parse_realtime_event;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::backoff;
-use codex_http_client::maybe_build_rustls_client_config_with_custom_ca;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::RealtimeTranscriptDelta;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+use codex_websocket_client::WebSocketConnection;
+use codex_websocket_client::WebSocketConnector;
 use futures::SinkExt;
 use futures::StreamExt;
 use http::HeaderMap;
@@ -28,13 +31,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
-use tokio_tungstenite::MaybeTlsStream;
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -65,7 +65,7 @@ enum WsCommand {
 
 impl WsStream {
     fn new(
-        inner: WebSocketStream<MaybeTlsStream<TcpStream>>,
+        inner: WebSocketConnection,
     ) -> (Self, async_channel::Receiver<Result<Message, WsError>>) {
         let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
         let (tx_message, rx_message) = async_channel::unbounded::<Result<Message, WsError>>();
@@ -93,7 +93,7 @@ impl WsStream {
                             }
                             WsCommand::Close { tx_result } => {
                                 info!("realtime websocket sending close");
-                                let result = inner.close(None).await;
+                                let result = inner.close().await;
                                 if let Err(err) = &result {
                                     error!("realtime websocket close failed: {err}");
                                 }
@@ -582,11 +582,26 @@ fn contains_transcript_entry(entries: &[RealtimeTranscriptEntry], role: &str, te
 
 pub struct RealtimeWebsocketClient {
     provider: Provider,
+    http_client_factory: HttpClientFactory,
 }
 
 impl RealtimeWebsocketClient {
     pub fn new(provider: Provider) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        }
+    }
+
+    /// Overrides the outbound proxy policy used for the realtime WebSocket connection.
+    ///
+    /// Defaults to `ReqwestDefault` (environment proxies resolved through the shared connector,
+    /// including `https://` / scheme-less proxies). Pass the application's configured factory to
+    /// also honor `respect_system_proxy` for realtime traffic.
+    #[must_use]
+    pub fn with_http_client_factory(mut self, http_client_factory: HttpClientFactory) -> Self {
+        self.http_client_factory = http_client_factory;
+        self
     }
 
     pub async fn connect(
@@ -687,19 +702,17 @@ impl RealtimeWebsocketClient {
         request.headers_mut().extend(headers);
 
         info!("connecting realtime websocket: {ws_url}");
-        // Realtime websocket TLS should honor the same custom-CA env vars as the rest of Codex's
-        // outbound HTTPS and websocket traffic.
-        let connector = maybe_build_rustls_client_config_with_custom_ca()
-            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?
-            .map(tokio_tungstenite::Connector::Rustls);
-        let (stream, response) = tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            Some(websocket_config()),
-            false,
-            connector,
-        )
-        .await
-        .map_err(|err| ApiError::Stream(format!("failed to connect realtime websocket: {err}")))?;
+        // Route through the proxy-aware WebSocket connector so realtime traffic honors the same
+        // system/environment proxy policy (including `https://` and scheme-less proxies) and the
+        // same custom-CA configuration as the rest of Codex's outbound websocket traffic.
+        let connector = WebSocketConnector::new(&self.http_client_factory)
+            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+        let (stream, response) = connector
+            .connect(request, websocket_config())
+            .await
+            .map_err(|err| {
+                ApiError::Stream(format!("failed to connect realtime websocket: {err}"))
+            })?;
         info!(
             ws_url = %ws_url,
             status = %response.status(),

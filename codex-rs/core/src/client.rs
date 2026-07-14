@@ -402,6 +402,12 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap 
 }
 
 impl ModelClient {
+    /// Returns the session's outbound-proxy-aware HTTP client factory so other transports (for
+    /// example the realtime WebSocket) can observe the same resolved proxy policy.
+    pub fn http_client_factory(&self) -> &HttpClientFactory {
+        &self.http_client_factory
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
     ///
