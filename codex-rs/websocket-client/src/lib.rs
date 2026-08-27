@@ -96,7 +96,7 @@ impl WebSocketConnector {
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
         let proxy_route = self
             .http_client_factory
-            .resolve_proxy_route_async(request.uri().to_string())
+            .resolve_websocket_proxy_route_async(request.uri().to_string())
             .await
             .map_err(WebSocketError::Io)?;
         let (inner, response) = dialer::connect(

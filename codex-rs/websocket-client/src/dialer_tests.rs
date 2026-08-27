@@ -299,6 +299,111 @@ async fn no_proxy_subprocess_probe() {
     );
 }
 
+#[tokio::test]
+async fn public_connector_uses_scheme_less_environment_proxy_in_a_subprocess() {
+    let (target_addr, target_task) = start_echo_websocket_server(/*acceptor*/ None).await;
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("proxy listener should bind");
+    let proxy_addr = proxy_listener
+        .local_addr()
+        .expect("proxy listener should have an address");
+    let proxy_task = tokio::spawn(async move {
+        let (mut client, _) = proxy_listener.accept().await.expect("proxy should accept");
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            client
+                .read_exact(&mut byte)
+                .await
+                .expect("proxy should read CONNECT request");
+            request.push(byte[0]);
+        }
+        let mut target = tokio::net::TcpStream::connect(target_addr)
+            .await
+            .expect("proxy should connect to target");
+        client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .expect("proxy should acknowledge CONNECT");
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
+        String::from_utf8(request).expect("CONNECT request should be UTF-8")
+    });
+
+    let executable = std::env::current_exe().expect("test executable should be available");
+    let target_url = format!("ws://{target_addr}/v1/responses");
+    let proxy_url = proxy_addr.to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        let mut command = Command::new(executable);
+        command.args([
+            "--exact",
+            "dialer::tests::scheme_less_environment_proxy_subprocess_probe",
+            "--nocapture",
+        ]);
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "CODEX_CA_CERTIFICATE",
+            "SSL_CERT_FILE",
+        ] {
+            command.env_remove(key);
+        }
+        command
+            .env("HTTP_PROXY", proxy_url)
+            .env("CODEX_WEBSOCKET_ENV_PROXY_PROBE_URL", target_url)
+            .output()
+            .expect("WebSocket environment-proxy subprocess should run")
+    })
+    .await
+    .expect("WebSocket environment-proxy subprocess should join");
+    assert!(
+        output.status.success(),
+        "WebSocket environment-proxy subprocess failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    target_task.await.expect("target task should finish");
+    let request = proxy_task.await.expect("proxy task should finish");
+    let expected_request_line = format!("CONNECT {target_addr} HTTP/1.1");
+    assert_eq!(request.lines().next(), Some(expected_request_line.as_str()));
+}
+
+#[tokio::test]
+async fn scheme_less_environment_proxy_subprocess_probe() {
+    let Ok(url) = std::env::var("CODEX_WEBSOCKET_ENV_PROXY_PROBE_URL") else {
+        return;
+    };
+    let request = url
+        .into_client_request()
+        .expect("websocket request should build");
+    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+    let connector = WebSocketConnector::new(&factory).expect("connector should build");
+    let (mut websocket, _) = connector
+        .connect(request, WebSocketConfig::default())
+        .await
+        .expect("websocket handshake should succeed through environment proxy");
+    let expected = Message::Text("environment proxy".into());
+    websocket
+        .send(expected.clone())
+        .await
+        .expect("websocket should send");
+    assert_eq!(
+        websocket
+            .next()
+            .await
+            .expect("websocket should receive a message")
+            .expect("websocket message should be valid"),
+        expected
+    );
+}
+
 #[test]
 fn https_proxy_defaults_to_port_443_and_preserves_explicit_port() {
     let default_port = ProxyEndpoint::parse("https://proxy.example")

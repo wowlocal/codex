@@ -275,6 +275,27 @@ impl HttpClientFactory {
         }
     }
 
+    /// Resolves a WebSocket destination while preserving native proxy handling where possible.
+    ///
+    /// Tungstenite handles ordinary HTTP and SOCKS environment proxies itself, but rejects HTTPS
+    /// and scheme-less proxy URLs. When system-proxy support is disabled, those two forms are
+    /// resolved explicitly so WebSocket connections retain the environment behavior used by HTTP
+    /// clients. System-resolved routes use the normal policy and only normalize scheme-less URLs.
+    pub async fn resolve_websocket_proxy_route_async(
+        &self,
+        request_url: String,
+    ) -> io::Result<OutboundProxyRoute> {
+        match self.outbound_proxy_policy {
+            OutboundProxyPolicy::ReqwestDefault => Ok(
+                resolve_transport_default_websocket_proxy_route(&ProcessEnv, &request_url),
+            ),
+            OutboundProxyPolicy::RespectSystemProxy => self
+                .resolve_proxy_route_async(request_url)
+                .await
+                .map(normalize_websocket_proxy_route),
+        }
+    }
+
     fn cached_proxy_route(&self, request_url: &str) -> Option<OutboundProxyRoute> {
         let env_proxy_kind = EnvProxyKind::from_request_url(request_url);
         let request_url = proxy_resolution_url(request_url);
@@ -353,7 +374,18 @@ fn resolve_env_proxy_route(
     env: &dyn EnvSource,
     env_proxy_kind: EnvProxyKind,
 ) -> OutboundProxyRoute {
-    let proxy_url = match env_proxy_kind {
+    let proxy_url = env_proxy_url(env, env_proxy_kind);
+    match proxy_url {
+        Some(url) => OutboundProxyRoute::Proxy {
+            url,
+            no_proxy: proxy_env_value(env, "NO_PROXY"),
+        },
+        None => OutboundProxyRoute::Direct,
+    }
+}
+
+fn env_proxy_url(env: &dyn EnvSource, env_proxy_kind: EnvProxyKind) -> Option<String> {
+    match env_proxy_kind {
         EnvProxyKind::Https => {
             proxy_env_value(env, "HTTPS_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
         }
@@ -364,14 +396,44 @@ fn resolve_env_proxy_route(
             proxy_env_value(env, "HTTP_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
         }
         EnvProxyKind::Other => proxy_env_value(env, "ALL_PROXY"),
-    };
-    match proxy_url {
-        Some(url) => OutboundProxyRoute::Proxy {
-            url,
-            no_proxy: proxy_env_value(env, "NO_PROXY"),
-        },
-        None => OutboundProxyRoute::Direct,
     }
+}
+
+fn resolve_transport_default_websocket_proxy_route(
+    env: &dyn EnvSource,
+    request_url: &str,
+) -> OutboundProxyRoute {
+    let env_proxy_kind = EnvProxyKind::from_request_url(request_url);
+    let Some(proxy_url) = env_proxy_url(env, env_proxy_kind) else {
+        return OutboundProxyRoute::TransportDefault;
+    };
+    let proxy_url = proxy_url.trim();
+    let url = match proxy_url_scheme(proxy_url).as_deref() {
+        Some("https") => proxy_url.to_string(),
+        None => format!("http://{proxy_url}"),
+        Some(_) => return OutboundProxyRoute::TransportDefault,
+    };
+    OutboundProxyRoute::Proxy {
+        url,
+        no_proxy: proxy_env_value(env, "NO_PROXY"),
+    }
+}
+
+fn normalize_websocket_proxy_route(route: OutboundProxyRoute) -> OutboundProxyRoute {
+    match route {
+        OutboundProxyRoute::Proxy { url, no_proxy } if proxy_url_scheme(&url).is_none() => {
+            OutboundProxyRoute::Proxy {
+                url: format!("http://{}", url.trim()),
+                no_proxy,
+            }
+        }
+        route => route,
+    }
+}
+
+fn proxy_url_scheme(value: &str) -> Option<String> {
+    let (scheme, _) = value.trim().split_once("://")?;
+    Some(scheme.to_ascii_lowercase())
 }
 
 #[derive(Clone, Copy)]
