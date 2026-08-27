@@ -422,6 +422,7 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
+        mcp_apps_negotiated: false,
     }
 }
 
@@ -647,6 +648,7 @@ async fn create_test_manager_with_ready_apps_client(
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: Some(cache_context.clone()),
+        mcp_apps_negotiated: false,
     };
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
@@ -4369,6 +4371,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
         server_instructions: initialize.instructions,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
+        mcp_apps_negotiated: false,
     };
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");

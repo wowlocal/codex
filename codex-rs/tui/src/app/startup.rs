@@ -127,6 +127,14 @@ impl App {
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
+        let mcp_apps_browser = if config.features.enabled(Feature::EnableMcpApps) {
+            match McpAppsBrowser::start(app_server.request_handle(), app_event_tx.clone()).await {
+                Ok(browser) => Some(browser),
+                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+            }
+        } else {
+            None
+        };
         emit_project_config_warnings(&app_event_tx, &config);
         emit_system_bwrap_warning(&app_event_tx, &config);
         tui.set_notification_settings(
@@ -533,6 +541,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_app_server_requests: PendingAppServerRequests::default(),
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
+            mcp_apps_browser,
             pending_startup_thread_start,
             startup_protected_input_boundary: true,
             startup_pending_protected_request: false,

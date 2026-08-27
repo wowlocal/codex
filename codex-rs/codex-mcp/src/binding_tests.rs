@@ -91,6 +91,7 @@ async fn test_step(
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,
         codex_apps_tools_cache_context: None,
+        mcp_apps_negotiated: false,
     });
     let clients = Arc::new(McpBindingClients::new(HashMap::from([(
         SERVER_NAME.to_string(),

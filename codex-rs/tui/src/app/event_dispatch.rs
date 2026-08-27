@@ -808,6 +808,24 @@ impl App {
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_thread_op(app_server, thread_id, op).await?;
             }
+            AppEvent::McpAppMessage {
+                thread_id,
+                text,
+                response_tx,
+            } => {
+                let result = if self.current_displayed_thread_id() != Some(thread_id) {
+                    Err("Open the MCP App's thread in Codex before sending a message.".to_string())
+                } else if self
+                    .chat_widget
+                    .submit_user_message_as_plain_user_turn(text.into())
+                    .is_some()
+                {
+                    Ok(())
+                } else {
+                    Err("Codex could not accept the MCP App message.".to_string())
+                };
+                let _ = response_tx.send(result);
+            }
             AppEvent::ThreadHistoryEntryResponse { thread_id, event } => {
                 self.enqueue_thread_history_entry_response(thread_id, event)
                     .await?;
