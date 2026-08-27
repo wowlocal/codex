@@ -23,6 +23,7 @@ use crate::rmcp_client::MCP_TOOLS_LIST_DURATION_METRIC;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::list_tools_for_client_uncached;
 use crate::rmcp_client::prepare_codex_apps_tools_for_model;
+use crate::rmcp_client::strip_mcp_app_resource_metadata_from_tools;
 use crate::runtime::emit_duration;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
@@ -388,7 +389,7 @@ impl McpConnectionSet {
                 .map(|cache_context| {
                     cache_context.begin_fetch(ConnectorRuntimeFetchSource::HardRefresh)
                 });
-        let client_tools = list_tools_for_client_uncached(
+        let mut client_tools = list_tools_for_client_uncached(
             CODEX_APPS_MCP_SERVER_NAME,
             /*is_codex_apps_mcp_server*/ true,
             /*codex_apps_refresh_trigger*/ "explicit",
@@ -401,6 +402,9 @@ impl McpConnectionSet {
         .with_context(|| {
             format!("failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'")
         })?;
+        if !managed_client.mcp_apps_negotiated {
+            strip_mcp_app_resource_metadata_from_tools(&mut client_tools);
+        }
 
         let mut tool_catalog_revision = self.tool_catalog_revision.write().await;
         let tools = match (

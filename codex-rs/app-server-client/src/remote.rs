@@ -90,11 +90,14 @@ pub struct RemoteAppServerConnectArgs {
     pub channel_capacity: usize,
 }
 impl RemoteAppServerConnectArgs {
-    pub(crate) fn initialize_params(&self) -> InitializeParams {
+    pub(crate) fn initialize_params_with_client_extensions(
+        &self,
+        client_extensions: &HashMap<String, serde_json::Value>,
+    ) -> InitializeParams {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
-            extensions: None,
+            extensions: (!client_extensions.is_empty()).then(|| client_extensions.clone()),
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -164,8 +167,15 @@ pub struct RemoteAppServerRequestHandle {
 
 impl RemoteAppServerClient {
     pub async fn connect(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
+        Self::connect_with_client_extensions(args, HashMap::new()).await
+    }
+
+    pub async fn connect_with_client_extensions(
+        args: RemoteAppServerConnectArgs,
+        client_extensions: HashMap<String, serde_json::Value>,
+    ) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let initialize_params = args.initialize_params();
+        let initialize_params = args.initialize_params_with_client_extensions(&client_extensions);
         match args.endpoint {
             RemoteAppServerEndpoint::WebSocket {
                 websocket_url,

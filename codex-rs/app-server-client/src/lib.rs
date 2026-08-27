@@ -19,6 +19,7 @@
 mod path;
 mod remote;
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::io::Error as IoError;
@@ -213,10 +214,17 @@ pub struct InProcessClientStartArgs {
 impl InProcessClientStartArgs {
     /// Builds initialize params from caller-provided metadata.
     pub fn initialize_params(&self) -> InitializeParams {
+        self.initialize_params_with_client_extensions(&HashMap::new())
+    }
+
+    fn initialize_params_with_client_extensions(
+        &self,
+        client_extensions: &HashMap<String, serde_json::Value>,
+    ) -> InitializeParams {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
-            extensions: None,
+            extensions: (!client_extensions.is_empty()).then(|| client_extensions.clone()),
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -235,8 +243,11 @@ impl InProcessClientStartArgs {
         }
     }
 
-    fn into_runtime_start_args(self) -> InProcessStartArgs {
-        let initialize = self.initialize_params();
+    fn into_runtime_start_args(
+        self,
+        client_extensions: &HashMap<String, serde_json::Value>,
+    ) -> InProcessStartArgs {
+        let initialize = self.initialize_params_with_client_extensions(client_extensions);
         InProcessStartArgs {
             arg0_paths: self.arg0_paths,
             config: self.config,
@@ -325,9 +336,18 @@ impl InProcessAppServerClient {
     /// The returned client is ready for requests and ordered event consumption.
     /// Request queues remain bounded without blocking on unread notifications.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
+        Self::start_with_client_extensions(args, HashMap::new()).await
+    }
+
+    /// Starts the in-process runtime while advertising app-server client extensions.
+    pub async fn start_with_client_extensions(
+        args: InProcessClientStartArgs,
+        client_extensions: HashMap<String, serde_json::Value>,
+    ) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+            codex_app_server::in_process::start(args.into_runtime_start_args(&client_extensions))
+                .await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
@@ -1070,10 +1090,29 @@ mod tests {
         args.mcp_server_openai_form_elicitation = true;
 
         assert!(
-            args.initialize_params()
+            args.initialize_params_with_client_extensions(&HashMap::new())
                 .capabilities
                 .expect("initialize capabilities")
                 .mcp_server_openai_form_elicitation
+        );
+    }
+
+    #[test]
+    fn remote_initialize_params_forward_client_extensions() {
+        let args = test_remote_connect_args("ws://localhost/rpc".to_string());
+        let settings = serde_json::json!({"mimeTypes": ["text/html;profile=mcp-app"]});
+        let client_extensions =
+            HashMap::from([("io.modelcontextprotocol/ui".to_string(), settings.clone())]);
+
+        assert_eq!(
+            args.initialize_params_with_client_extensions(&client_extensions)
+                .capabilities
+                .expect("initialize capabilities")
+                .extensions,
+            Some(HashMap::from([(
+                "io.modelcontextprotocol/ui".to_string(),
+                settings,
+            )]))
         );
     }
 
@@ -1946,7 +1985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_start_args_forward_environment_manager_and_openai_form_capability() {
+    async fn runtime_start_args_forward_environment_manager_and_client_capabilities() {
         let config = Arc::new(build_test_config().await);
         let environment_manager = Arc::new(
             EnvironmentManager::create_for_tests(
@@ -1962,6 +2001,10 @@ mod tests {
             .await,
         );
 
+        let client_extensions = HashMap::from([(
+            "io.modelcontextprotocol/ui".to_string(),
+            serde_json::json!({"mimeTypes": ["text/html;profile=mcp-app"]}),
+        )]);
         let runtime_args = InProcessClientStartArgs {
             arg0_paths: Arg0DispatchPaths::default(),
             config: config.clone(),
@@ -1983,16 +2026,15 @@ mod tests {
             opt_out_notification_methods: Vec::new(),
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         }
-        .into_runtime_start_args();
+        .into_runtime_start_args(&client_extensions);
 
         assert_eq!(runtime_args.config, config);
-        assert!(
-            runtime_args
-                .initialize
-                .capabilities
-                .expect("initialize capabilities")
-                .mcp_server_openai_form_elicitation
-        );
+        let capabilities = runtime_args
+            .initialize
+            .capabilities
+            .expect("initialize capabilities");
+        assert!(capabilities.mcp_server_openai_form_elicitation);
+        assert_eq!(capabilities.extensions, Some(client_extensions),);
         assert!(Arc::ptr_eq(
             &runtime_args.environment_manager,
             &environment_manager

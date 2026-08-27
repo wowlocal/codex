@@ -30,6 +30,7 @@ use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -1210,6 +1211,7 @@ impl AppServerSession {
         collaboration_mode: Option<codex_protocol::config_types::CollaborationMode>,
         personality: Option<codex_protocol::config_types::Personality>,
         output_schema: Option<serde_json::Value>,
+        additional_context: HashMap<String, AdditionalContextEntry>,
     ) -> Result<TurnStartResponse> {
         let request_id = self.next_request_id();
         let (sandbox_policy, permissions) =
@@ -1224,7 +1226,8 @@ impl AppServerSession {
                     input: items,
                     tool_output: None,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context: (!additional_context.is_empty())
+                        .then_some(additional_context),
                     environments: None,
                     cwd: Some(cwd),
                     runtime_workspace_roots: Some(workspace_roots.to_vec()),
@@ -1279,6 +1282,7 @@ impl AppServerSession {
         thread_id: ThreadId,
         turn_id: String,
         items: Vec<UserInput>,
+        additional_context: HashMap<String, AdditionalContextEntry>,
     ) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
         let request_id = self.next_request_id();
         self.client
@@ -1289,7 +1293,8 @@ impl AppServerSession {
                     client_user_message_id: None,
                     input: items,
                     responsesapi_client_metadata: None,
-                    additional_context: None,
+                    additional_context: (!additional_context.is_empty())
+                        .then_some(additional_context),
                     expected_turn_id: turn_id,
                 },
             })

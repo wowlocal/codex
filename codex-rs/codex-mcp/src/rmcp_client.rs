@@ -53,6 +53,7 @@ use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_exec_server::Environment;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -118,6 +119,7 @@ pub(crate) struct ManagedClient {
     pub(crate) server_instructions: Option<String>,
     pub(crate) server_supports_sandbox_state_meta_capability: bool,
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
+    pub(crate) mcp_apps_negotiated: bool,
 }
 
 impl ManagedClient {
@@ -894,6 +896,7 @@ async fn start_server_task(
         client_mcp_extensions,
         catalog_item_limit,
     } = params;
+    let client_supports_mcp_apps = client_mcp_extensions.contains(MCP_APP_UI_EXTENSION_ID);
     let params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
     let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
@@ -933,7 +936,14 @@ async fn start_server_task(
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|cache_context| cache_context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
-    let client_tools = list_tools_for_client_uncached(
+    let mcp_apps_negotiated = client_supports_mcp_apps
+        && (initialize_result.protocol_version != ProtocolVersion::V_2026_07_28
+            || initialize_result
+                .capabilities
+                .extensions
+                .as_ref()
+                .is_some_and(|extensions| extensions.contains_key(MCP_APP_UI_EXTENSION_ID)));
+    let mut client_tools = list_tools_for_client_uncached(
         &server_name,
         is_codex_apps_mcp_server,
         /*codex_apps_refresh_trigger*/ "initial",
@@ -944,6 +954,9 @@ async fn start_server_task(
     )
     .await
     .map_err(StartupOutcomeError::from)?;
+    if !mcp_apps_negotiated {
+        strip_mcp_app_resource_metadata_from_tools(&mut client_tools);
+    }
     let server_info =
         mcp_server_info_from_implementation(&server_name, initialize_result.server_info);
     let shared_tools = match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
@@ -977,9 +990,29 @@ async fn start_server_task(
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability,
         codex_apps_tools_cache_context,
+        mcp_apps_negotiated,
     };
 
     Ok(managed)
+}
+
+pub(crate) fn strip_mcp_app_resource_metadata_from_tools(tools: &mut [ToolInfo]) {
+    for tool in tools {
+        strip_mcp_app_resource_metadata(&mut tool.tool);
+    }
+}
+
+fn strip_mcp_app_resource_metadata(tool: &mut RmcpTool) {
+    let Some(meta) = tool.meta.as_mut() else {
+        return;
+    };
+    if let Some(ui) = meta
+        .get_mut("ui")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        ui.remove("resourceUri");
+    }
+    meta.remove("ui/resourceUri");
 }
 
 fn record_protocol_discovery_metrics(
@@ -1353,6 +1386,41 @@ mod tests {
         assert_eq!(
             meta.0.get("custom").and_then(|value| value.as_str()),
             Some("kept")
+        );
+    }
+
+    #[test]
+    fn unnegotiated_mcp_app_resource_metadata_is_stripped() {
+        let mut tool = RmcpTool::new("app_tool", "test tool", Arc::new(JsonObject::default()))
+            .with_meta(MetaObject(
+                serde_json::json!({
+                    "ui": {
+                        "resourceUri": "ui://demo/widget.html",
+                        "visibility": ["model", "app"],
+                    },
+                    "ui/resourceUri": "ui://demo/legacy.html",
+                    "openai/outputTemplate": "ui://demo/openai.html",
+                    "custom": "kept",
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ));
+
+        strip_mcp_app_resource_metadata(&mut tool);
+
+        assert_eq!(
+            tool.meta,
+            Some(MetaObject(
+                serde_json::json!({
+                    "ui": {"visibility": ["model", "app"]},
+                    "openai/outputTemplate": "ui://demo/openai.html",
+                    "custom": "kept",
+                })
+                .as_object()
+                .expect("object")
+                .clone(),
+            ))
         );
     }
 

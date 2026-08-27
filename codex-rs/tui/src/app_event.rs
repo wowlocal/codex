@@ -298,6 +298,13 @@ pub(crate) enum AppEvent {
         op: AppCommand,
     },
 
+    /// Submit a user message initiated by an MCP App companion-browser view.
+    McpAppMessage {
+        thread_id: ThreadId,
+        text: String,
+        response_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+    },
+
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
     RetrySafetyBufferedTurn {
         thread_id: ThreadId,
