@@ -100,7 +100,7 @@ impl WebSocketConnector {
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
         let proxy_route = self
             .http_client_factory
-            .resolve_proxy_route_async(request.uri().to_string())
+            .resolve_websocket_proxy_route_async(request.uri().to_string())
             .await
             .map_err(WebSocketError::Io)?;
         self.connect_with_route(request, config, proxy_route, /*loopback_direct*/ false)
