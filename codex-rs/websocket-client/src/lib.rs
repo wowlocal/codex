@@ -121,7 +121,7 @@ impl WebSocketConnector {
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
         let route = self
             .http_client_factory
-            .resolve_proxy_route_async(request.uri().to_string());
+            .resolve_websocket_proxy_route_async(request.uri().to_string());
         self.connect_with_route(request, config, route, /*loopback_direct*/ false)
             .await
     }
