@@ -90,11 +90,14 @@ pub struct RemoteAppServerConnectArgs {
     pub channel_capacity: usize,
 }
 impl RemoteAppServerConnectArgs {
-    pub(crate) fn initialize_params(&self) -> InitializeParams {
+    pub(crate) fn initialize_params_with_client_extensions(
+        &self,
+        client_extensions: &HashMap<String, serde_json::Value>,
+    ) -> InitializeParams {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
-            extensions: None,
+            extensions: (!client_extensions.is_empty()).then(|| client_extensions.clone()),
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -177,28 +180,44 @@ enum SocketPeerPolicy {
 
 impl RemoteAppServerClient {
     pub async fn connect(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
-        Self::connect_with_policy(args, SocketPeerPolicy::ExplicitEndpoint).await
+        Self::connect_with_client_extensions(args, HashMap::new()).await
+    }
+
+    pub async fn connect_with_client_extensions(
+        args: RemoteAppServerConnectArgs,
+        client_extensions: HashMap<String, serde_json::Value>,
+    ) -> IoResult<Self> {
+        Self::connect_with_policy(args, SocketPeerPolicy::ExplicitEndpoint, client_extensions).await
     }
 
     /// Connects to an implicitly discovered Windows daemon, verifying its peer
     /// token before the WebSocket handshake or any session requests.
     #[cfg(windows)]
     pub async fn connect_local_daemon(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
+        Self::connect_local_daemon_with_client_extensions(args, HashMap::new()).await
+    }
+
+    #[cfg(windows)]
+    pub async fn connect_local_daemon_with_client_extensions(
+        args: RemoteAppServerConnectArgs,
+        client_extensions: HashMap<String, serde_json::Value>,
+    ) -> IoResult<Self> {
         if !matches!(args.endpoint, RemoteAppServerEndpoint::UnixSocket { .. }) {
             return Err(IoError::new(
                 ErrorKind::InvalidInput,
                 "local daemon requires a Unix socket",
             ));
         }
-        Self::connect_with_policy(args, SocketPeerPolicy::NonElevatedCurrentUser).await
+        Self::connect_with_policy(args, SocketPeerPolicy::NonElevatedCurrentUser, client_extensions).await
     }
 
     async fn connect_with_policy(
         args: RemoteAppServerConnectArgs,
         peer_policy: SocketPeerPolicy,
+        client_extensions: HashMap<String, serde_json::Value>,
     ) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let initialize_params = args.initialize_params();
+        let initialize_params = args.initialize_params_with_client_extensions(&client_extensions);
         match args.endpoint {
             RemoteAppServerEndpoint::WebSocket {
                 websocket_url,

@@ -619,10 +619,13 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
         embedded.shutdown().await?;
         Ok(())
     });
-    let app_server = crate::connect_remote_app_server(crate::RemoteAppServerEndpoint::WebSocket {
-        websocket_url,
-        auth_token: None,
-    })
+    let app_server = crate::connect_remote_app_server(
+        crate::RemoteAppServerEndpoint::WebSocket {
+            websocket_url,
+            auth_token: None,
+        },
+        std::collections::HashMap::new(),
+    )
     .await?;
 
     Ok((

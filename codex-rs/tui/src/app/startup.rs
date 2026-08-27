@@ -199,6 +199,14 @@ impl App {
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
+        let mcp_apps_browser = if config.features.enabled(Feature::EnableMcpApps) {
+            match McpAppsBrowser::start(app_server.request_handle(), app_event_tx.clone()).await {
+                Ok(browser) => Some(browser),
+                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+            }
+        } else {
+            None
+        };
         if let Some(message) = project_config_warning(&config) {
             app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::StartupWarningsCell::new(vec![message]),
@@ -821,6 +829,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_app_server_requests: PendingAppServerRequests::default(),
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
+            mcp_apps_browser,
             pending_startup_thread_start,
             pending_server_version_notice: if pending_startup_thread_start {
                 initial_server_version_notice

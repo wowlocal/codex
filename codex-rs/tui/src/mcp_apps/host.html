@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MCP App · Codex</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: Canvas; color: CanvasText; }
+    body { display: grid; grid-template-rows: 42px 1fr; }
+    body[data-display-mode="fullscreen"] { grid-template-rows: 1fr; }
+    body[data-display-mode="fullscreen"] > header { display: none; }
+    header { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); }
+    #title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    #status { margin-left: auto; opacity: .65; font-size: 12px; }
+    #close { border: 0; border-radius: 5px; padding: 4px 8px; background: color-mix(in srgb, CanvasText 10%, transparent); color: inherit; cursor: pointer; }
+    iframe { width: 100%; height: 100%; border: 0; background: transparent; }
+  </style>
+</head>
+<body data-mcp-app-status="loading" data-display-mode="inline">
+  <header>
+    <span id="title">MCP App</span>
+    <span id="status">Loading resource…</span>
+    <button id="close" type="button">Close</button>
+  </header>
+  <iframe id="sandbox" title="MCP App" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer"></iframe>
+  <script>
+    const config = __CODEX_CONFIG__;
+    const sandbox = document.getElementById("sandbox");
+    const status = document.getElementById("status");
+    const closeButton = document.getElementById("close");
+    const supportedDisplayModes = ["inline", "fullscreen"];
+    const pendingRequests = new Map();
+    let nextRequestId = 1;
+    let protocolState = "loading";
+    let teardownStarted = false;
+    let closedNotified = false;
+    let resource;
+    let lastDimensions;
+    let healthFailures = 0;
+    let healthTimer;
+    let toolDataSent = false;
+    let availableDisplayModes = ["inline"];
+    let currentDisplayMode = "inline";
+
+    function setStatus(value, state) {
+      status.textContent = value;
+      document.body.dataset.mcpAppStatus = state;
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }
+
+    const bootstrap = fetchJson(config.bootstrapUrl);
+    const appResource = fetchJson(config.resourceUrl);
+
+    function send(message) {
+      if (!sandbox.contentWindow) return;
+      sandbox.contentWindow.postMessage(
+        { channel: config.channel, message },
+        config.sandboxOrigin,
+      );
+    }
+
+    function reply(id, result) {
+      send({ jsonrpc: "2.0", id, result });
+    }
+
+    function fail(id, code, message) {
+      send({ jsonrpc: "2.0", id, error: { code, message } });
+    }
+
+    function requestView(method, params, timeoutMs = 1000) {
+      const id = `codex-host-${nextRequestId++}`;
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pendingRequests.delete(id);
+          reject(new Error(`${method} timed out`));
+        }, timeoutMs);
+        pendingRequests.set(id, { resolve, reject, timeout });
+        send({ jsonrpc: "2.0", id, method, params });
+      });
+    }
+
+    function resolvePending(message) {
+      if (message.id === undefined || message.method !== undefined) return false;
+      const pending = pendingRequests.get(message.id);
+      if (!pending) return true;
+      pendingRequests.delete(message.id);
+      clearTimeout(pending.timeout);
+      if (message.error) pending.reject(new Error(message.error.message || "MCP App request failed"));
+      else pending.resolve(message.result);
+      return true;
+    }
+
+    function containerDimensions() {
+      const rect = sandbox.getBoundingClientRect();
+      return {
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(1, Math.round(rect.height)),
+      };
+    }
+
+    function chooseDisplayMode(appCapabilities) {
+      const declared = Array.isArray(appCapabilities.availableDisplayModes)
+        ? appCapabilities.availableDisplayModes.filter(mode =>
+            supportedDisplayModes.includes(mode),
+          )
+        : supportedDisplayModes;
+      if (declared.length === 0) return null;
+      return {
+        displayMode: declared.includes("inline") ? "inline" : declared[0],
+        availableDisplayModes: declared,
+      };
+    }
+
+    function validInitializeParams(params) {
+      return params && typeof params === "object"
+        && typeof params.protocolVersion === "string"
+        && params.appInfo && typeof params.appInfo === "object"
+        && typeof params.appInfo.name === "string"
+        && typeof params.appInfo.version === "string"
+        && params.appCapabilities && typeof params.appCapabilities === "object";
+    }
+
+    function notifyClosed() {
+      if (closedNotified) return;
+      closedNotified = true;
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(config.closeUrl, new Blob([], { type: "text/plain" }));
+      } else {
+        fetch(config.closeUrl, { method: "POST", keepalive: true }).catch(() => {});
+      }
+    }
+
+    async function teardown({ waitForResponse, removeFrame }) {
+      if (teardownStarted) return;
+      teardownStarted = true;
+      clearInterval(healthTimer);
+      if (protocolState === "initialized") {
+        if (waitForResponse) {
+          try {
+            await requestView("ui/resource-teardown", {}, 1000);
+          } catch (error) {
+            console.warn("[Codex MCP Apps] graceful teardown failed", error);
+          }
+        } else {
+          send({
+            jsonrpc: "2.0",
+            id: `codex-host-${nextRequestId++}`,
+            method: "ui/resource-teardown",
+            params: {},
+          });
+        }
+      }
+      notifyClosed();
+      protocolState = "closed";
+      if (removeFrame) sandbox.remove();
+      closeButton.disabled = true;
+      setStatus("Closed", "closed");
+    }
+
+    window.addEventListener("message", async event => {
+      if (event.source !== sandbox.contentWindow
+          || event.origin !== config.sandboxOrigin
+          || event.data?.channel !== config.channel) return;
+      const message = event.data.message;
+      if (!message || message.jsonrpc !== "2.0") {
+        console.warn("[Codex MCP Apps] ignored invalid sandbox message", message);
+        return;
+      }
+      if (resolvePending(message)) return;
+      if (typeof message.method !== "string") return;
+
+      if (message.method === "ui/notifications/sandbox-proxy-ready") {
+        if (protocolState !== "loading") return;
+        send({
+          jsonrpc: "2.0",
+          method: "ui/notifications/sandbox-resource-ready",
+          params: {
+            html: resource.html,
+            sandbox: "allow-scripts allow-same-origin allow-forms",
+            csp: resource.csp,
+            permissions: {},
+          },
+        });
+        protocolState = "awaiting-initialize";
+        setStatus("Connecting…", "connecting");
+        return;
+      }
+
+      if (message.method === "ui/initialize" && message.id !== undefined) {
+        if (!validInitializeParams(message.params)) {
+          fail(message.id, -32602, "Invalid ui/initialize params");
+          return;
+        }
+        const display = chooseDisplayMode(message.params.appCapabilities);
+        if (!display) {
+          fail(message.id, -32000, "The MCP App has no display mode supported by this host");
+          return;
+        }
+        availableDisplayModes = display.availableDisplayModes;
+        currentDisplayMode = display.displayMode;
+        document.body.dataset.displayMode = currentDisplayMode;
+        lastDimensions = containerDimensions();
+        const wasInitialized = protocolState === "initialized";
+        reply(message.id, {
+          protocolVersion: message.params.protocolVersion === config.protocolVersion
+            ? message.params.protocolVersion
+            : config.protocolVersion,
+          hostInfo: { name: "codex-cli", title: "Codex CLI", version: config.version },
+          hostCapabilities: {
+            sandbox: { csp: resource.csp, permissions: {} },
+            updateModelContext: { text: {}, structuredContent: {} },
+            message: { text: {} },
+            serverTools: {},
+          },
+          hostContext: {
+            platform: "desktop",
+            displayMode: currentDisplayMode,
+            availableDisplayModes,
+            containerDimensions: lastDimensions,
+            locale: navigator.language,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            userAgent: navigator.userAgent,
+          },
+        });
+        if (!wasInitialized) protocolState = "awaiting-initialized";
+        return;
+      }
+
+      if (message.method === "ui/notifications/initialized") {
+        if (protocolState !== "awaiting-initialized") {
+          console.warn("[Codex MCP Apps] ignored out-of-order initialized notification");
+          return;
+        }
+        protocolState = "initialized";
+        if (!toolDataSent) {
+          toolDataSent = true;
+          const value = await bootstrap;
+          send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: value.toolInput });
+          send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: value.toolResult });
+        }
+        setStatus("Connected", "ready");
+        return;
+      }
+
+      if (message.method === "ping" && message.id !== undefined) {
+        reply(message.id, {});
+        return;
+      }
+
+      if (message.method === "ui/request-display-mode" && message.id !== undefined) {
+        if (protocolState !== "initialized") {
+          fail(message.id, -32000, "MCP App has not completed initialization");
+          return;
+        }
+        const requestedMode = message.params?.mode;
+        if (!supportedDisplayModes.includes(requestedMode)) {
+          fail(message.id, -32602, "Invalid display mode");
+          return;
+        }
+        if (availableDisplayModes.includes(requestedMode)) {
+          currentDisplayMode = requestedMode;
+          document.body.dataset.displayMode = currentDisplayMode;
+          lastDimensions = containerDimensions();
+        }
+        reply(message.id, { mode: currentDisplayMode });
+        send({
+          jsonrpc: "2.0",
+          method: "ui/notifications/host-context-changed",
+          params: {
+            displayMode: currentDisplayMode,
+            containerDimensions: lastDimensions,
+          },
+        });
+        return;
+      }
+
+      if (message.method === "ui/notifications/size-changed") {
+        const { width, height } = message.params || {};
+        if ((width !== undefined && (!Number.isFinite(width) || width < 0))
+            || (height !== undefined && (!Number.isFinite(height) || height < 0))) {
+          console.warn("[Codex MCP Apps] ignored invalid size-changed notification");
+        }
+        return;
+      }
+
+      if (message.method === "notifications/message") {
+        console.debug("[Codex MCP App]", message.params?.level, message.params?.data);
+        return;
+      }
+
+      if (message.method === "ui/notifications/request-teardown") {
+        void teardown({ waitForResponse: true, removeFrame: true });
+        return;
+      }
+
+      if ((message.method === "ui/update-model-context"
+          || message.method === "ui/message"
+          || message.method === "tools/call")
+          && message.id !== undefined) {
+        if (protocolState !== "initialized") {
+          fail(message.id, -32000, "MCP App has not completed initialization");
+          return;
+        }
+        try {
+          const response = await fetch(config.rpcUrl, {
+            method: "POST",
+            cache: "no-store",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(message),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          send(await response.json());
+        } catch (error) {
+          fail(message.id, -32603, error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+
+      if (message.id !== undefined) fail(message.id, -32601, "Method not found");
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (protocolState !== "initialized") return;
+      const next = containerDimensions();
+      if (lastDimensions?.width === next.width && lastDimensions?.height === next.height) return;
+      lastDimensions = next;
+      send({
+        jsonrpc: "2.0",
+        method: "ui/notifications/host-context-changed",
+        params: { containerDimensions: next },
+      });
+    });
+    resizeObserver.observe(sandbox);
+
+    closeButton.addEventListener("click", () => {
+      void teardown({ waitForResponse: true, removeFrame: true });
+    });
+    window.addEventListener("pagehide", () => {
+      void teardown({ waitForResponse: false, removeFrame: false });
+    });
+
+    healthTimer = setInterval(async () => {
+      if (teardownStarted) return;
+      try {
+        const response = await fetch(config.aliveUrl, { cache: "no-store" });
+        if (response.ok) {
+          healthFailures = 0;
+          return;
+        }
+        if (response.status === 404) healthFailures = 3;
+        else healthFailures += 1;
+      } catch {
+        healthFailures += 1;
+      }
+      if (healthFailures >= 3) {
+        await teardown({ waitForResponse: true, removeFrame: true });
+      }
+    }, 2000);
+
+    Promise.all([bootstrap, appResource]).then(([value, loadedResource]) => {
+      document.getElementById("title").textContent = value.title;
+      document.title = `${value.title} · Codex`;
+      resource = loadedResource;
+      sandbox.src = config.sandboxUrl;
+    }).catch(error => {
+      protocolState = "error";
+      setStatus(error instanceof Error ? error.message : String(error), "error");
+    });
+  </script>
+</body>
+</html>

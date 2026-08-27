@@ -14,7 +14,10 @@ use codex_app_server_client::RemoteAppServerEndpoint;
 #[cfg(windows)]
 use codex_utils_absolute_path::AbsolutePathBuf;
 
-pub(crate) async fn connect(target: &AppServerTarget) -> color_eyre::Result<AppServerClient> {
+pub(crate) async fn connect(
+    target: &AppServerTarget,
+    client_extensions: std::collections::HashMap<String, serde_json::Value>,
+) -> color_eyre::Result<AppServerClient> {
     match target {
         AppServerTarget::Embedded => {
             color_eyre::eyre::bail!("embedded sessions have no remote connection")
@@ -28,7 +31,7 @@ pub(crate) async fn connect(target: &AppServerTarget) -> color_eyre::Result<AppS
             let (socket_path, _directory) =
                 codex_uds::validate_private_socket_path(socket_path.as_path())?;
             let app_server =
-                RemoteAppServerClient::connect_local_daemon(RemoteAppServerConnectArgs {
+                RemoteAppServerClient::connect_local_daemon_with_client_extensions(RemoteAppServerConnectArgs {
                     endpoint: RemoteAppServerEndpoint::UnixSocket {
                         socket_path: AbsolutePathBuf::from_absolute_path_checked(socket_path)?,
                     },
@@ -38,12 +41,12 @@ pub(crate) async fn connect(target: &AppServerTarget) -> color_eyre::Result<AppS
                     mcp_server_openai_form_elicitation: false,
                     opt_out_notification_methods: Vec::new(),
                     channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-                })
+                }, client_extensions)
                 .await?;
             Ok(AppServerClient::Remote(app_server))
         }
         AppServerTarget::LocalDaemon { endpoint, .. } | AppServerTarget::Remote { endpoint } => {
-            connect_remote_app_server(endpoint.clone()).await
+            connect_remote_app_server(endpoint.clone(), client_extensions).await
         }
     }
 }

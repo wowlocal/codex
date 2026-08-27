@@ -748,6 +748,12 @@ impl App {
                 collaboration_mode,
                 personality,
             } => {
+                let additional_context = self
+                    .mcp_apps_browser
+                    .as_ref()
+                    .map_or_else(HashMap::new, |browser| {
+                        browser.additional_context(thread_id)
+                    });
                 let mut should_start_turn = true;
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     let mut steer_turn_id = turn_id;
@@ -759,6 +765,7 @@ impl App {
                                 steer_turn_id.clone(),
                                 client_user_message_id.clone(),
                                 items.to_vec(),
+                                additional_context.clone(),
                             )
                             .await
                         {
@@ -884,6 +891,7 @@ impl App {
                             collaboration_mode.clone(),
                             *personality,
                             final_output_json_schema.clone(),
+                            additional_context,
                         )
                         .await?;
                     if self.active_thread_id == Some(thread_id)
@@ -2045,6 +2053,7 @@ impl App {
     }
 
     pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
+        let mcp_app_link = self.mcp_app_link_for_thread_event(&event);
         match event {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
@@ -2068,6 +2077,21 @@ impl App {
                 self.handle_feedback_thread_event(event);
             }
         }
+        if let Some(link) = mcp_app_link {
+            self.chat_widget.add_to_history(link.history_cell());
+        }
+    }
+
+    fn mcp_app_link_for_thread_event(
+        &self,
+        event: &ThreadBufferedEvent,
+    ) -> Option<crate::mcp_apps::McpAppViewLink> {
+        let ThreadBufferedEvent::Notification(notification) = event else {
+            return None;
+        };
+        self.mcp_apps_browser
+            .as_ref()?
+            .register_notification(notification)
     }
 
     /// Handles an event emitted by the currently active thread.
@@ -2081,6 +2105,7 @@ impl App {
         app_server: &mut AppServerSession,
         event: ThreadBufferedEvent,
     ) -> Result<()> {
+        let mcp_app_link = self.mcp_app_link_for_thread_event(&event);
         // Capture this before any potential thread switch: we only want to clear
         // the exit marker when the currently active thread acknowledges shutdown.
         let pending_shutdown_exit_completed = matches!(
@@ -2155,6 +2180,9 @@ impl App {
         let had_active_modal = self.chat_widget.has_active_modal();
         self.handle_thread_event_now_recovering_file_changes(event)
             .await;
+        if let Some(link) = mcp_app_link {
+            self.chat_widget.add_to_history(link.history_cell());
+        }
         if let Some(user_message) = automatic_title_user_message
             && !user_message.trim().is_empty()
             && let Some(thread_id) = self.active_thread_id
