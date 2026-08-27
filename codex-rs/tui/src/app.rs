@@ -59,6 +59,7 @@ use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::managed_new_thread_defaults::apply_managed_new_thread_defaults;
+use crate::mcp_apps::McpAppsBrowser;
 use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
@@ -635,6 +636,7 @@ pub(crate) struct App {
     dynamic_tool_status_updates:
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
     dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
+    mcp_apps_browser: Option<McpAppsBrowser>,
     pending_startup_thread_start: bool,
     /// Opens the session picker after event dispatch returns, with a fresh stack.
     pending_open_resume_picker: bool,

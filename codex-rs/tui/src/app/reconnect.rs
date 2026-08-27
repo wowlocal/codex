@@ -53,7 +53,9 @@ pub(super) async fn reconnect(
     for delay in [0, 1, 2, 4, 8] {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            let client = crate::app_server_connection::connect(&target).await?;
+            let client = crate::app_server_connection::connect(
+                &target, crate::mcp_apps_client_extensions(&config),
+            ).await?;
             let mut session = AppServerSession::new(client, mode)
                 .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
