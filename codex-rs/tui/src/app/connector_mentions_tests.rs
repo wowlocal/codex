@@ -120,6 +120,7 @@ async fn load_mock_mentions(responses: MockResponses) -> Result<(ConnectorsSnaps
             websocket_url,
             auth_token: None,
         },
+        std::collections::HashMap::new(),
     )
     .await
     .expect("connect to mock app server");

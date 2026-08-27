@@ -11,6 +11,10 @@ impl ChatWidget {
         &mut self,
         user_message: UserMessage,
     ) -> Option<AppCommand> {
+        if self.blocks_direct_input {
+            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            return None;
+        }
         self.submit_user_message_with_shell_escape_policy(user_message, ShellEscapePolicy::Disallow)
     }
 
