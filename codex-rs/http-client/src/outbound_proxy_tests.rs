@@ -188,6 +188,68 @@ fn reqwest_default_route_preserves_transport_proxy_behavior() {
     assert_eq!(route, OutboundProxyRoute::TransportDefault);
 }
 
+#[test]
+fn transport_default_websocket_route_intercepts_unsupported_environment_proxy_urls() {
+    let no_proxy = "localhost,.internal".to_string();
+    for (proxy_url, expected_url) in [
+        ("https://proxy.example:8443", "https://proxy.example:8443"),
+        ("proxy.example:8080", "http://proxy.example:8080"),
+    ] {
+        let env = MapEnv {
+            values: HashMap::from([
+                ("HTTPS_PROXY".to_string(), proxy_url.to_string()),
+                ("NO_PROXY".to_string(), no_proxy.clone()),
+            ]),
+        };
+
+        assert_eq!(
+            resolve_transport_default_websocket_proxy_route(
+                &env,
+                "wss://api.openai.com/v1/responses",
+            ),
+            OutboundProxyRoute::Proxy {
+                url: expected_url.to_string(),
+                no_proxy: Some(no_proxy.clone()),
+            }
+        );
+    }
+}
+
+#[test]
+fn transport_default_websocket_route_preserves_native_proxy_schemes() {
+    for proxy_url in [
+        "http://proxy.example:8080",
+        "socks5://proxy.example:1080",
+        "socks5h://proxy.example:1080",
+    ] {
+        let env = MapEnv {
+            values: HashMap::from([("HTTPS_PROXY".to_string(), proxy_url.to_string())]),
+        };
+
+        assert_eq!(
+            resolve_transport_default_websocket_proxy_route(
+                &env,
+                "wss://api.openai.com/v1/responses",
+            ),
+            OutboundProxyRoute::TransportDefault
+        );
+    }
+}
+
+#[test]
+fn websocket_route_normalizes_scheme_less_system_fallback() {
+    assert_eq!(
+        normalize_websocket_proxy_route(OutboundProxyRoute::Proxy {
+            url: " proxy.example:8080 ".to_string(),
+            no_proxy: Some("localhost".to_string()),
+        }),
+        OutboundProxyRoute::Proxy {
+            url: "http://proxy.example:8080".to_string(),
+            no_proxy: Some("localhost".to_string()),
+        }
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_proxy_configuration_rejects_invalid_destination() {
