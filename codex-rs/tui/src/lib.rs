@@ -172,6 +172,7 @@ mod markdown;
 mod markdown_render;
 mod markdown_stream;
 mod markdown_text_merge;
+mod mcp_apps;
 mod mention_codec;
 mod model_catalog;
 mod model_migration;
@@ -295,6 +296,7 @@ async fn start_embedded_app_server(
     environment_manager: Arc<EnvironmentManager>,
     embedded_network_policy: codex_app_server_client::EmbeddedNetworkPolicy,
 ) -> color_eyre::Result<InProcessAppServerClient> {
+    let client_extensions = mcp_apps_client_extensions(&config);
     start_embedded_app_server_with(
         arg0_paths,
         config,
@@ -307,7 +309,7 @@ async fn start_embedded_app_server(
         state_db,
         environment_manager,
         embedded_network_policy,
-        InProcessAppServerClient::start,
+        move |args| InProcessAppServerClient::start_with_client_extensions(args, client_extensions),
     )
     .await
 }
@@ -322,6 +324,19 @@ pub(crate) enum AppServerTarget {
     Remote {
         endpoint: RemoteAppServerEndpoint,
     },
+}
+
+fn mcp_apps_client_extensions(
+    config: &Config,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    if !config.features.enabled(Feature::EnableMcpApps) {
+        return std::collections::HashMap::new();
+    }
+
+    std::collections::HashMap::from([(
+        codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID.to_string(),
+        serde_json::json!({"mimeTypes": ["text/html;profile=mcp-app"]}),
+    )])
 }
 
 impl AppServerTarget {
@@ -495,16 +510,20 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
 
 async fn connect_remote_app_server(
     endpoint: RemoteAppServerEndpoint,
+    client_extensions: std::collections::HashMap<String, serde_json::Value>,
 ) -> color_eyre::Result<AppServerClient> {
-    let app_server = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint,
-        client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(),
-        channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
+    let app_server = RemoteAppServerClient::connect_with_client_extensions(
+        RemoteAppServerConnectArgs {
+            endpoint,
+            client_name: "codex-tui".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        },
+        client_extensions,
+    )
     .await
     .wrap_err("failed to connect to remote app server")?;
     Ok(AppServerClient::Remote(app_server))
@@ -565,7 +584,7 @@ async fn start_app_server(
     let connection = if matches!(target, AppServerTarget::Embedded) {
         None
     } else {
-        Some(app_server_connection::connect(target).await)
+        Some(app_server_connection::connect(target, mcp_apps_client_extensions(&config)).await)
     };
     if let Some(connection) = connection {
         match connection {
