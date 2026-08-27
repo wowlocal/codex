@@ -59,6 +59,7 @@ use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -1866,6 +1867,7 @@ impl AppServerSession {
         output_schema: Option<serde_json::Value>,
         cyber_access_program: Option<codex_app_server_protocol::CyberAccessProgram>,
         cloud_selection: Option<&user_message_submission::CloudModelSelection>,
+        additional_context: HashMap<String, AdditionalContextEntry>,
     ) -> Result<TurnStartResponse> {
         let mut params = TurnStartParams {
             thread_id: thread_id.to_string(),
@@ -1874,6 +1876,7 @@ impl AppServerSession {
             input: items,
             output_schema,
             cyber_access_program,
+            additional_context: (!additional_context.is_empty()).then_some(additional_context),
             ..TurnStartParams::default()
         };
         if self.thread_params_mode.settings_owner() == ThreadSettingsOwner::Client {
@@ -1933,6 +1936,7 @@ impl AppServerSession {
         turn_id: String,
         client_user_message_id: String,
         items: Vec<UserInput>,
+        additional_context: HashMap<String, AdditionalContextEntry>,
     ) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
         let request_id = self.next_request_id();
         self.request_handle
@@ -1944,7 +1948,8 @@ impl AppServerSession {
                     input: items,
                     responsesapi_client_metadata: None,
                     responsesapi_client_metadata_patch: None,
-                    additional_context: None,
+                    additional_context: (!additional_context.is_empty())
+                        .then_some(additional_context),
                     expected_turn_id: turn_id,
                 },
             })

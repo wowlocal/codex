@@ -37,6 +37,7 @@ pub(crate) struct ManagedClient {
     pub(crate) server_instructions: Option<String>,
     pub(crate) server_supports_sandbox_state_meta_capability: bool,
     pub(crate) client_supports_network_policy_meta_capability: bool,
+    pub(crate) mcp_apps_negotiated: bool,
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
 }
 
