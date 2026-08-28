@@ -30,7 +30,12 @@ The expected local configuration uses one-line, double-quoted values:
 [env]
 HTTPS_PROXY = "https://user:password@proxy.example:443"
 HTTP_PROXY = "https://user:password@proxy.example:443"
+NO_PROXY = "localhost,127.0.0.1,::1,192.168.0.50"
 ```
+
+The `NO_PROXY` entry keeps loopback MCP servers and other local development endpoints direct while
+external Codex and `codex_apps` traffic continues through the configured proxy. Add the exact host
+or IP address of each LAN MCP server because loopback entries do not cover private-network peers.
 
 Run the tracked launcher directly:
 
