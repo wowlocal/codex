@@ -252,7 +252,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         });
         let mut session = AppServerSession::new(
             refresh_owner,
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, HashMap::new()).await?,
             ThreadParamsMode::Embedded,
         );
         if overview_initialized {

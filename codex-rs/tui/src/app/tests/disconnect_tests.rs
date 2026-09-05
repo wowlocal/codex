@@ -64,7 +64,7 @@ async fn lost_mutation_reply_preserves_work_without_resubmitting() -> Result<()>
     });
     let mut session = AppServerSession::new(
         crate::backend_id::BackendId::new(),
-        crate::connect_remote_app_server(endpoint).await?,
+        crate::connect_remote_app_server(endpoint, HashMap::new()).await?,
         ThreadParamsMode::Remote,
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -484,7 +484,7 @@ async fn lost_initial_thread_reply_keeps_startup_draft_offline() -> Result<()> {
         });
         let mut session = AppServerSession::new(
             crate::backend_id::BackendId::new(),
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, HashMap::new()).await?,
             ThreadParamsMode::Remote,
         );
         let result = crate::app_server_session::start_thread_with_request_handle(

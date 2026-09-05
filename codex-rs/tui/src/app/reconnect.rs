@@ -239,6 +239,7 @@ impl App {
             if let Some(pane) = self.sidebars.get_mut(&self.sidebar_parent()) {
                 pane.opening = None;
             }
+            self.mcp_apps_browser = None;
             self.reconnect.offline = true;
             self.account_email_request_id = None;
             // Cached blank sessions are usable only while this connection owns a subscription.
@@ -418,6 +419,12 @@ impl App {
         }
         self.chat_widget.windows_sandbox_host = WindowsSandboxHost::Unknown;
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
+        if self.config.features.enabled(Feature::EnableMcpApps) {
+            self.mcp_apps_browser = Some(
+                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
+                    .await?,
+            );
+        }
         let managed_daemon = self
             .chat_widget
             .remote_connection
