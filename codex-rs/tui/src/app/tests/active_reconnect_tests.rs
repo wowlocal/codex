@@ -13,6 +13,9 @@ use super::disconnect::serve_reconnect_requests;
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
     for (recovered_queue, edit_offline) in [(true, false), (false, false), (true, true)] {
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+        app.config
+            .features
+            .set_enabled(Feature::EnableMcpApps, /*enabled*/ true)?;
         let id = ThreadId::new();
         let cwd = app.config.cwd.clone();
         app.config.model = Some("gpt-test".into());
@@ -105,6 +108,8 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             Ok::<_, color_eyre::Report>(methods)
         });
         let mut session = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        app.mcp_apps_browser =
+            Some(McpAppsBrowser::start(session.request_handle(), app.app_event_tx.clone()).await?);
         std::fs::write(
             app.config
                 .codex_home
@@ -153,6 +158,7 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             );
         let mut tui = crate::tui::test_support::make_test_tui()?;
         app.begin_reconnect();
+        assert!(app.mcp_apps_browser.is_none());
         if edit_offline {
             app.handle_tui_event(
                 &mut tui,
@@ -201,6 +207,7 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
         app.finish_reconnect(&mut tui, &mut session, &mut events, connected)
             .await?;
         assert!(!app.reconnect.offline);
+        assert!(app.mcp_apps_browser.is_some());
         assert_eq!(app.last_subagent_backfill_attempt, None);
         assert!(
             app.rate_limit_refresh_state

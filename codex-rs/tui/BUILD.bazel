@@ -5,6 +5,7 @@ codex_rust_crate(
     compile_data = glob([
         "assets/**",
         "frames/**",
+        "src/mcp_apps/*.html",
     ]),
     crate_name = "codex_tui",
     extra_binaries = [

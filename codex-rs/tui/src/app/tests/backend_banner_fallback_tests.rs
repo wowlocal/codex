@@ -312,10 +312,13 @@ async fn backend_banner_fallback_handles_settings_failure_and_queued_manual_sele
             }
             Result::<()>::Ok(())
         });
-        let client = crate::connect_remote_app_server(crate::RemoteAppServerEndpoint::WebSocket {
-            websocket_url,
-            auth_token: None,
-        })
+        let client = crate::connect_remote_app_server(
+            crate::RemoteAppServerEndpoint::WebSocket {
+                websocket_url,
+                auth_token: None,
+            },
+            HashMap::new(),
+        )
         .await?;
         let mut server = AppServerSession::new(
             client,

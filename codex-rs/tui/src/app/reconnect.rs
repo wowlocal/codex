@@ -57,7 +57,11 @@ pub(super) async fn reconnect(
     for delay in [0, 1, 2, 4, 8] {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            let client = crate::connect_remote_app_server(endpoint.clone()).await?;
+            let client = crate::connect_remote_app_server(
+                endpoint.clone(),
+                crate::mcp_apps_client_extensions(&config),
+            )
+            .await?;
             let mut session = AppServerSession::new(client, mode)
                 .with_startup_config(&config)
                 .with_remote_cwd_override(remote_cwd.clone())
@@ -165,6 +169,7 @@ impl App {
             return false;
         }
         if !self.reconnect.offline {
+            self.mcp_apps_browser = None;
             self.reconnect.offline = true;
             self.reconnect.failed = false;
             self.cancel_pending_key_chord();
@@ -233,6 +238,12 @@ impl App {
         self.rate_limit_refresh_state.invalidate_recovery();
         session.inherit_task_tool_capabilities(app_server);
         *app_server = session;
+        if self.config.features.enabled(Feature::EnableMcpApps) {
+            self.mcp_apps_browser = Some(
+                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
+                    .await?,
+            );
+        }
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
                 &self.app_server_target,
