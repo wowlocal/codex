@@ -15,7 +15,12 @@ done
 script_dir="$(cd -P "$(dirname "$script_path")" >/dev/null 2>&1 && pwd)"
 repo_root="$(cd "$script_dir/.." >/dev/null 2>&1 && pwd)"
 
-codex_binary="${CODEX_FORK_BINARY:-$repo_root/codex-rs/target/release/codex}"
+if [[ -f "$repo_root/codex-package.json" ]]; then
+  default_binary="$repo_root/bin/codex"
+else
+  default_binary="$repo_root/codex-rs/target/release/codex"
+fi
+codex_binary="${CODEX_FORK_BINARY:-$default_binary}"
 codex_config="${CODEX_FORK_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
 
 read_proxy_value() {

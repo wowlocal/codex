@@ -22,7 +22,8 @@ launched test process works through a proxy.
 2. fills missing proxy variables from the `[env]` table in
    `${CODEX_HOME:-$HOME/.codex}/config.toml`;
 3. never prints proxy values; and
-4. executes `codex-rs/target/release/codex` without adding another long-lived process.
+4. executes `bin/codex` in a release package or `codex-rs/target/release/codex` in a source
+   checkout without adding another long-lived process.
 
 The expected local configuration uses one-line, double-quoted values:
 
@@ -55,7 +56,7 @@ binary. These overrides are launcher-only and are not Codex configuration keys.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.151.0-fork.<short-sha>`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.153.4-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
