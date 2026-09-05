@@ -191,6 +191,7 @@ impl App {
                 owner.reset_realtime_conversation();
             }
             self.retire_background_voice();
+            self.mcp_apps_browser = None;
             self.reconnect.offline = true;
             // Cached blank sessions are usable only while this connection owns a subscription.
             self.agents_overview.blank_sessions.clear();
@@ -312,6 +313,12 @@ impl App {
         self.chat_widget.windows_sandbox_host = WindowsSandboxHost::Unknown;
         self.chat_widget.cyber_policy_notice = Default::default();
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
+        if self.config.features.enabled(Feature::EnableMcpApps) {
+            self.mcp_apps_browser = Some(
+                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
+                    .await?,
+            );
+        }
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
                 &self.app_server_target,
