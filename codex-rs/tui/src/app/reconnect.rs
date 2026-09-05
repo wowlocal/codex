@@ -197,6 +197,7 @@ impl App {
                 owner.reset_realtime_conversation();
             }
             self.retire_background_voice();
+            self.mcp_apps_browser = None;
             self.reconnect.offline = true;
             self.account_email_request_id = None;
             // Cached blank sessions are usable only while this connection owns a subscription.
@@ -345,6 +346,12 @@ impl App {
             .remote_connection
             .as_ref()
             .is_some_and(|connection| connection.is_managed_daemon);
+        if self.config.features.enabled(Feature::EnableMcpApps) {
+            self.mcp_apps_browser = Some(
+                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
+                    .await?,
+            );
+        }
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
                 &self.app_server_target,

@@ -45,6 +45,9 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
         // Reconstructed widgets should use the same hint on every test terminal.
         app.local_settings.tui.keymap.chat.edit_queued_message =
             Some(KeybindingsSpec::One(KeybindingSpec("alt-up".into())));
+        app.config
+            .features
+            .set_enabled(Feature::EnableMcpApps, /*enabled*/ true)?;
         let id = ThreadId::new();
         let cwd = app.config.cwd.clone();
         app.config.model = Some("gpt-test".into());
@@ -173,6 +176,8 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             Ok::<_, color_eyre::Report>(methods)
         });
         let mut session = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        app.mcp_apps_browser =
+            Some(McpAppsBrowser::start(session.request_handle(), app.app_event_tx.clone()).await?);
         std::fs::write(
             app.config
                 .codex_home
@@ -242,6 +247,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             app.chat_widget.show_bottom_pane_view(Box::new(view));
         }
         app.begin_reconnect();
+        assert!(app.mcp_apps_browser.is_none());
         if deferred_notice {
             assert_eq!(
                 app.agents_overview
@@ -344,6 +350,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
         );
         assert!(!app.reconnect.offline);
         assert!(!app.thread_unavailable(id));
+        assert!(app.mcp_apps_browser.is_some());
         assert_eq!(app.last_subagent_backfill_attempt, None);
         assert!(
             app.rate_limit_refresh_state
