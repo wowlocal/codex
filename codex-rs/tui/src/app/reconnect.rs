@@ -176,6 +176,7 @@ impl App {
             return false;
         }
         if !self.reconnect.offline {
+            self.mcp_apps_browser = None;
             self.reconnect.offline = true;
             self.reconnect.failed = false;
             self.cancel_pending_key_chord();
@@ -254,6 +255,12 @@ impl App {
         );
         self.chat_widget.cyber_policy_notice = Default::default();
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
+        if self.config.features.enabled(Feature::EnableMcpApps) {
+            self.mcp_apps_browser = Some(
+                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
+                    .await?,
+            );
+        }
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
                 &self.app_server_target,
