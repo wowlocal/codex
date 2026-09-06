@@ -597,7 +597,7 @@ pub struct Tui {
     // True when overlay alt-screen UI is active
     alt_screen_active: Arc<AtomicBool>,
     // True when terminal/tab is focused; updated internally from crossterm events
-    terminal_focused: Arc<AtomicBool>,
+    pub(crate) terminal_focused: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
     notification_backend: Option<DesktopNotificationBackend>,
     notification_condition: NotificationCondition,
