@@ -244,6 +244,8 @@ mod clipboard;
 mod footer_selection;
 mod native_history;
 mod owned_transcript;
+#[cfg(unix)]
+mod local_control;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;
