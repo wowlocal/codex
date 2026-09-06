@@ -60,4 +60,7 @@ if [[ ! -x "$codex_binary" ]]; then
   exit 1
 fi
 
+# This personal launcher opts into the fork's same-user native TUI controls.
+# Set CODEX_TUI_CONTROL=0 to disable; the raw binary remains opt-in.
+export CODEX_TUI_CONTROL="${CODEX_TUI_CONTROL:-1}"
 exec "$codex_binary" "$@"

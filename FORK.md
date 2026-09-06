@@ -53,6 +53,44 @@ ln -s /absolute/path/to/codex/scripts/run-codex-fork.sh ~/.cargo/bin/codex
 Use `CODEX_FORK_CONFIG` to test another config file and `CODEX_FORK_BINARY` to select another built
 binary. These overrides are launcher-only and are not Codex configuration keys.
 
+## Native TUI settings control (Unix)
+
+The raw binary opts in with `CODEX_TUI_CONTROL=1`. This fork's launcher enables
+it by default; `CODEX_TUI_CONTROL=0` disables it. Each TUI publishes a private
+`$CODEX_HOME/tui-control/<pid>-<instance>/session.json` rendezvous record and a
+same-user Unix socket. The endpoint belongs to the displayed TUI, including
+cached task switches; no title parsing, keyboard injection, or external
+app-server proxy is involved. The initial implementation is Unix-only.
+
+The JSONL protocol is version 1. `status/read` returns the current task ID,
+effective model/effort, supported effort choices, collaboration mode, focus,
+readiness, activity and context usage. `status/subscribe` sends an initial
+snapshot and subsequent changes. Responses are wrapped in `{"result": ...}`.
+The `revision` changes when the control target or its settings/readiness/focus
+change; activity and context-only updates do not invalidate a settings request.
+
+Submit `effort/set` with a UUID `requestId`, `expectedThreadId`,
+`expectedRevision`, and an explicit `effort`. The TUI checks selection, focus,
+readiness, model support and native task ownership, then uses the existing
+thread settings operation. Explicit supported Max/Ultra values are permitted;
+keyboard shortcut behavior is unchanged. This changes next-turn settings and
+preserves Plan mode and unrelated settings without persisting global defaults.
+
+`request/read` with the same `requestId` reports `pending`, `applied`,
+`rejected`, or `unconfirmed`. Applied means a matching native settings event
+was observed (or the requested setting already held). Queued does not mean
+applied. Terminal outcomes include an `outcome` object. A disconnect/lost event
+stream or a 30-second confirmation deadline is unconfirmed, not success.
+The last 64 requests are retained for the lifetime of that TUI instance.
+Repeating an identical retained request returns its result without another
+write; reusing its ID with different parameters is rejected. Unknown/expired
+IDs must not be blindly resubmitted. One effort request can be pending at once.
+
+Rendezvous directories are private and owner-checked; peers must have the same
+UID. Frames are bounded to 4096 bytes, connections to eight, and writes have a
+deadline. Clean exit removes only that instance's own files. Conversation,
+approval, prompt, tool, and account-credential APIs are not exposed here.
+
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
@@ -63,3 +101,14 @@ For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release
 `aarch64-apple-darwin`, archive dSYMs, strip the binaries with the upstream release script, and sign
 the final artifacts. Local ad-hoc signing validates binary integrity but is not equivalent to the
 Developer ID signing and notarization used by an official OpenAI release.
+
+## Local build resource limits
+
+This fork defaults to one Cargo build job in `codex-rs/.cargo/config.toml`.
+Run compilation and tests sequentially on the 24 GB development Mac; do not
+start a release build while a test build or Clippy is still running. Use
+`nice -n 10 cargo build --release --target aarch64-apple-darwin -p codex-cli --bin codex`
+for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
+for TUI checks. A larger machine can explicitly override the build limit with
+`-j N`. These settings limit concurrency and scheduling priority, not the
+memory allocation of a single compiler or linker process.

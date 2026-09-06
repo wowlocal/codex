@@ -18,6 +18,9 @@ mod connector_policy;
 mod disconnect;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
+#[cfg(unix)]
+#[path = "tests/local_control_tests.rs"]
+mod local_control_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 mod model_catalog;

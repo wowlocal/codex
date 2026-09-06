@@ -224,6 +224,8 @@ mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
+#[cfg(unix)]
+mod local_control;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;

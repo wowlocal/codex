@@ -723,10 +723,34 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(debug_assertions)]
         let pre_loop_exit_reason: Option<ExitReason> = None;
 
+        let control_enabled =
+            cfg!(unix) && std::env::var("CODEX_TUI_CONTROL").as_deref() == Ok("1");
+        #[cfg(unix)]
+        let mut local_control = if control_enabled {
+            match crate::local_control::LocalControl::start(
+                &app.config.codex_home,
+                std::env::var("TERM_PROGRAM").unwrap_or_default(),
+            ) {
+                Ok(control) => Some(control),
+                Err(error) => {
+                    tracing::warn!("local TUI control unavailable: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut control_tick =
+            tokio::time::interval(std::time::Duration::from_millis(/*millis*/ 100));
+        control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let exit_reason_result = if let Some(exit_reason) = pre_loop_exit_reason {
             Ok(exit_reason)
         } else {
             loop {
+                #[cfg(unix)]
+                if let Some(control) = local_control.as_mut() {
+                    control.publish(app.local_control_snapshot(tui));
+                }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     reconnect = Some(Box::pin(reconnect::reconnect(
                         app.app_server_target.clone(),
@@ -753,6 +777,22 @@ See the Codex keymap documentation for supported actions and examples."
                         || (!waiting_for_initial_session_configured
                             && app.has_queued_startup_protected_request());
                 let control = select! {
+                    _ = control_tick.tick(), if control_enabled => { AppRunControl::Continue }
+                    _request = async {
+                        #[cfg(unix)]
+                        {
+                            if let Some(control) = local_control.as_mut() { return control.commands.recv().await }
+                            std::future::pending::<Option<crate::local_control::EffortRequest>>().await
+                        }
+                        #[cfg(not(unix))]
+                        std::future::pending::<()>().await
+                    } => {
+                        #[cfg(unix)]
+                        if let (Some(request), Some(control)) = (_request, local_control.as_mut()) {
+                            app.apply_local_effort(tui, &mut app_server, control, request).await;
+                        }
+                        AppRunControl::Continue
+                    }
                     Some(event) = app_event_rx.recv() => {
                         let is_initial_session_header = matches!(
                             &event,
@@ -832,7 +872,11 @@ See the Codex keymap documentation for supported actions and examples."
                     app_server_event = app_server.next_event(), if listen_for_app_server_events && !app.reconnect.offline
                         && (matches!(app.app_server_target, AppServerTarget::Embedded) || !has_pending_app_events) => {
                         match app_server_event {
-                            Some(event) => app.handle_app_server_event(&app_server, event).await,
+                            Some(event) => {
+                                #[cfg(unix)]
+                                if let Some(control) = local_control.as_mut() { control.observe(&event); }
+                                app.handle_app_server_event(&app_server, event).await
+                            },
                             None => {
                                 listen_for_app_server_events = false;
                                 app.begin_reconnect();
