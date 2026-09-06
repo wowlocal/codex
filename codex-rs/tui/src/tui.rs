@@ -668,7 +668,7 @@ pub struct Tui {
     // True when an overlay or the owned transcript uses the alternate screen.
     alt_screen_active: Arc<AtomicBool>,
     // True when terminal/tab is focused; updated internally from crossterm events
-    terminal_focused: Arc<AtomicBool>,
+    pub(crate) terminal_focused: Arc<AtomicBool>,
     enhanced_keys_supported: bool,
     // Cache the startup result so later configuration loads use the same terminal policy.
     pub(crate) terminal_app_over_ssh: bool,
