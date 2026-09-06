@@ -19,7 +19,9 @@ async fn native_effort_waits_for_settings_event_and_preserves_plan_and_config() 
         .handle_thread_session_quiet(started.session.clone());
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
-    app.startup_protected_input_boundary = false;
+    // A fresh idle TUI keeps this boundary until its first keypress. It must
+    // not prevent a settings-only dial request before the user starts typing.
+    app.startup_protected_input_boundary = true;
     let config_before = std::fs::read_to_string(&config_path)?;
     app.chat_widget
         .set_collaboration_mask(CollaborationModeMask {

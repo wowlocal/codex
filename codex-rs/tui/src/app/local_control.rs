@@ -19,7 +19,8 @@ impl App {
             && !self.chat_widget.has_active_view()
             && self.overlay.is_none()
             && !self.startup_pending_protected_request
-            && !self.startup_protected_input_boundary
+            && !self.has_queued_startup_protected_request()
+            && !self.chat_widget.has_pending_protected_request()
             && thread.is_some_and(|id| !self.agent_navigation.is_parent_owned(id));
         state["threadId"] = json!(thread.map(|id| id.to_string()));
         state["ready"] = ready.into();
