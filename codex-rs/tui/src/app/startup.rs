@@ -1341,6 +1341,26 @@ See the Codex keymap documentation for supported actions and examples."
         backends.settings = backend_settings;
 
         let mut parked_side_completions = HashMap::<_, Vec<AppEvent>>::new();
+        let control_enabled =
+            cfg!(unix) && std::env::var("CODEX_TUI_CONTROL").as_deref() == Ok("1");
+        #[cfg(unix)]
+        let mut local_control = if control_enabled {
+            match crate::local_control::LocalControl::start(
+                &app.config.codex_home,
+                std::env::var("TERM_PROGRAM").unwrap_or_default(),
+            ) {
+                Ok(control) => Some(control),
+                Err(error) => {
+                    tracing::warn!("local TUI control unavailable: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut control_tick =
+            tokio::time::interval(std::time::Duration::from_millis(/*millis*/ 100));
+        control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let exit_reason_result = if let Some(exit_reason) = pre_loop_exit_reason {
             Ok(exit_reason)
         } else {
@@ -1432,6 +1452,10 @@ See the Codex keymap documentation for supported actions and examples."
                     Box::pin(app.finish_managed_worktree(*created)).await;
                     continue;
                 }
+                #[cfg(unix)]
+                if let Some(control) = local_control.as_mut() {
+                    control.publish(app.local_control_snapshot(tui));
+                }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     let presentation = app.reconnect.presentation;
                     let wait_for_drain =
@@ -1502,6 +1526,22 @@ See the Codex keymap documentation for supported actions and examples."
                     .rate_limit_refresh_interval()
                     .and_then(|interval| app.rate_limit_refresh_state.poll_deadline(interval));
                 let control = select! {
+                    _ = control_tick.tick(), if control_enabled => { AppRunControl::Continue }
+                    _request = async {
+                        #[cfg(unix)]
+                        {
+                            if let Some(control) = local_control.as_mut() { return control.commands.recv().await }
+                            std::future::pending::<Option<crate::local_control::EffortRequest>>().await
+                        }
+                        #[cfg(not(unix))]
+                        std::future::pending::<()>().await
+                    } => {
+                        #[cfg(unix)]
+                        if let (Some(request), Some(control)) = (_request, local_control.as_mut()) {
+                            app.apply_local_effort(tui, backends.session_at_mut(backends.displayed), control, request).await;
+                        }
+                        AppRunControl::Continue
+                    }
                     result = async {
                         match app.daemon_restart.as_mut() {
                             Some(task) => task.await,
@@ -1634,6 +1674,9 @@ See the Codex keymap documentation for supported actions and examples."
                                 backends.defer_side_startup(event);
                             }
                             Some(event) if owner != displayed_owner || !app.reconnect.offline => {
+                                #[cfg(unix)]
+                                if owner == displayed_owner
+                                    && let Some(control) = local_control.as_mut() { control.observe(&event); }
                                 if let Some(slot) = backends.slot(owner) {
                                     let (session, parked_inputs) = backends.session_and_parked_inputs(slot);
                                     app.handle_polled_backend_event(session, displayed_owner, parked_inputs, event).await;

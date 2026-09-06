@@ -53,6 +53,9 @@ mod local_command_scroll_tests;
 mod luna_reserve_recovery_tests;
 #[path = "tests/marketplace_upgrade_tests.rs"]
 mod marketplace_upgrade_tests;
+#[cfg(unix)]
+#[path = "tests/local_control_tests.rs"]
+mod local_control_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]

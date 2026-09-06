@@ -129,3 +129,64 @@ async fn oversized_input_does_not_reach_tui() {
     assert!(result.is_err());
     assert!(control.commands.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn only_matching_native_settings_confirm_request() {
+    use codex_app_server_protocol::ThreadSettings;
+    use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let mut control = LocalControl::start(home.path(), "test".into()).unwrap();
+    let request = request();
+    let (tx, mut rx) = mpsc::channel(/*buffer*/ 1);
+    control
+        .requests
+        .lock()
+        .unwrap()
+        .enqueue(request.clone(), &tx);
+    rx.recv().await.unwrap();
+    control.pending = Some((request.clone(), "test-model".into()));
+    let mut updated = ThreadSettingsUpdatedNotification {
+        thread_id: "background".into(),
+        thread_settings: ThreadSettings {
+            cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).unwrap(),
+            approval_policy: codex_app_server_protocol::AskForApproval::Never,
+            approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
+            sandbox_policy: codex_app_server_protocol::SandboxPolicy::ReadOnly {
+                network_access: false,
+            },
+            active_permission_profile: None,
+            model: "test-model".into(),
+            model_provider: "openai".into(),
+            service_tier: None,
+            effort: Some(ReasoningEffort::High),
+            summary: None,
+            collaboration_mode: CollaborationMode {
+                mode: ModeKind::Plan,
+                settings: Settings {
+                    model: "test-model".into(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    developer_instructions: None,
+                },
+            },
+            multi_agent_mode: Default::default(),
+            personality: None,
+        },
+    };
+    control.observe(&AppServerEvent::ServerNotification(Box::new(
+        ServerNotification::ThreadSettingsUpdated(updated.clone()),
+    )));
+    assert!(control.pending.is_some());
+    updated.thread_id.clone_from(&request.expected_thread_id);
+    control.observe(&AppServerEvent::ServerNotification(Box::new(
+        ServerNotification::ThreadSettingsUpdated(updated),
+    )));
+    assert_eq!(
+        control.requests.lock().unwrap().0[0].1,
+        json!({"requestId":request.request_id,"status":"applied",
+        "outcome":{"threadId":request.expected_thread_id,"model":"test-model","effort":"high"}})
+    );
+    assert!(control.pending.is_none());
+}
