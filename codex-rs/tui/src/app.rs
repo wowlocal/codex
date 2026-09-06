@@ -236,6 +236,8 @@ mod new_session;
 pub(crate) use new_session::has_launch_setting;
 mod native_history;
 mod owned_transcript;
+#[cfg(unix)]
+mod local_control;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;
