@@ -1531,14 +1531,14 @@ See the Codex keymap documentation for supported actions and examples."
                         #[cfg(unix)]
                         {
                             if let Some(control) = local_control.as_mut() { return control.commands.recv().await }
-                            std::future::pending::<Option<crate::local_control::EffortRequest>>().await
+                            std::future::pending::<Option<crate::local_control::SettingsRequest>>().await
                         }
                         #[cfg(not(unix))]
                         std::future::pending::<()>().await
                     } => {
                         #[cfg(unix)]
                         if let (Some(request), Some(control)) = (_request, local_control.as_mut()) {
-                            app.apply_local_effort(tui, backends.session_at_mut(backends.displayed), control, request).await;
+                            app.apply_local_settings(tui, backends.session_at_mut(backends.displayed), control, request).await;
                         }
                         AppRunControl::Continue
                     }

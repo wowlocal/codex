@@ -1,5 +1,6 @@
 //! Settings and activity exposed to the optional local controller.
 use super::ChatWidget;
+use codex_protocol::openai_models::SPEED_TIER_FAST;
 use serde_json::Value;
 use serde_json::json;
 
@@ -11,6 +12,15 @@ impl ChatWidget {
             .try_list_models()
             .ok()
             .and_then(|models| models.into_iter().find(|preset| preset.model == model));
+        let fast_tier = preset
+            .as_ref()
+            .filter(|_| self.fast_mode_enabled() && self.has_chatgpt_account)
+            .and_then(|p| {
+                p.service_tiers
+                    .iter()
+                    .find(|tier| tier.name.eq_ignore_ascii_case(SPEED_TIER_FAST))
+            })
+            .map(|tier| tier.id.clone());
         let effort = self
             .current_reasoning_effort()
             .or_else(|| preset.as_ref().map(|p| p.default_reasoning_effort.clone()));
@@ -32,6 +42,7 @@ impl ChatWidget {
         });
         json!({"model":model,"effort":effort,"supportedEfforts":levels,
             "collaborationMode":self.effective_collaboration_mode().mode,
+            "serviceTier":self.effective_service_tier,"fastServiceTier":fast_tier,
             "state":if self.bottom_pane.is_task_running(){"WORKING"}else{"IDLE"},
             "contextPct":context,"badges":self.effective_service_tier.as_ref().map(|tier|vec![tier])})
     }
