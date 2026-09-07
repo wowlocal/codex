@@ -57,10 +57,24 @@ impl App {
                 {
                     Some("effort is not supported by the selected model")
                 }
+                SettingsChange::Model { model, effort }
+                    if !state["models"].as_array().is_some_and(|models| {
+                        models.iter().any(|preset| {
+                            preset["model"] == *model
+                                && preset["levels"]
+                                    .as_array()
+                                    .is_some_and(|levels| levels.contains(&json!(effort)))
+                        })
+                    }) =>
+                {
+                    Some("model or effort is not available in the picker")
+                }
                 SettingsChange::Fast { .. } if !state["fastServiceTier"].is_string() => {
                     Some("Fast mode is not supported by the selected model or account")
                 }
-                SettingsChange::Effort(_) | SettingsChange::Fast { .. } => None,
+                SettingsChange::Effort(_)
+                | SettingsChange::Fast { .. }
+                | SettingsChange::Model { .. } => None,
             }
         };
         if let Some(error) = error {
@@ -78,6 +92,16 @@ impl App {
                 mode.settings.reasoning_effort = Some(effort.clone());
                 params.effort = Some(effort.clone());
                 params.collaboration_mode = Some(mode);
+                expected["effort"] = json!(effort);
+            }
+            SettingsChange::Model { model, effort } => {
+                let mut mode = self.chat_widget.effective_collaboration_mode();
+                mode.settings.model = model.clone();
+                mode.settings.reasoning_effort = Some(effort.clone());
+                params.model = Some(model.clone());
+                params.effort = Some(effort.clone());
+                params.collaboration_mode = Some(mode);
+                expected["model"] = json!(model);
                 expected["effort"] = json!(effort);
             }
             SettingsChange::Fast { enabled } => {

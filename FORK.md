@@ -63,7 +63,7 @@ cached task switches; no title parsing, keyboard injection, or external
 app-server proxy is involved. The initial implementation is Unix-only.
 
 The JSONL protocol is version 1. `status/read` returns the current task ID,
-effective model/effort, service tier, supported effort choices, collaboration mode, focus,
+effective model/effort, service tier, supported effort choices, visible model choices, collaboration mode, focus,
 readiness, activity and context usage. `status/subscribe` sends an initial
 snapshot and subsequent changes. Responses are wrapped in `{"result": ...}`.
 The `revision` changes when the control target or its settings/readiness/focus
@@ -84,6 +84,13 @@ Fast-by-default model stays disabled. The ordinary settings notification confirm
 the change. Both commands preserve the visible Plan mask, including before its
 first turn, without writing config.toml. Existing CLI processes must restart to
 load this endpoint.
+
+Submit `model/set` with the same request identity/selection fields and explicit
+`model` and `effort` values. The `models` snapshot array advertises each visible
+picker entry as `model`, `name`, `levels`, and `default`. The endpoint rejects
+models or effort values outside this catalog, preserves the visible Plan mask,
+and confirms both settings through the ordinary native settings event. This
+command does not start a turn or persist global defaults.
 
 `request/read` with the same `requestId` reports `pending`, `applied`,
 `rejected`, or `unconfirmed`. Applied means a matching native settings event
