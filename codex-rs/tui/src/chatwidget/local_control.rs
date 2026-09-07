@@ -6,6 +6,12 @@ use serde_json::json;
 
 impl ChatWidget {
     pub(crate) fn local_control_snapshot(&self) -> Value {
+        let models: Vec<_> = self.model_catalog.try_list_models().unwrap_or_default()
+            .into_iter().filter(|preset| preset.show_in_picker)
+            .map(|preset| json!({"model":preset.model, "name":preset.display_name,
+                "default":preset.default_reasoning_effort,
+                "levels":preset.supported_reasoning_efforts.into_iter().map(|e| e.effort).collect::<Vec<_>>()}))
+            .collect();
         let model = self.current_model();
         let preset = self
             .model_catalog
@@ -40,7 +46,7 @@ impl ChatWidget {
                         .clamp(/*min*/ 0.0, /*max*/ 100.0)
                 })
         });
-        json!({"model":model,"effort":effort,"supportedEfforts":levels,
+        json!({"models":models,"model":model,"effort":effort,"supportedEfforts":levels,
             "collaborationMode":self.effective_collaboration_mode().mode,
             "serviceTier":self.effective_service_tier,"fastServiceTier":fast_tier,
             "state":if self.bottom_pane.is_task_running(){"WORKING"}else{"IDLE"},

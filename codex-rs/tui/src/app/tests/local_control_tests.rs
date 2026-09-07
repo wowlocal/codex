@@ -164,3 +164,94 @@ async fn native_fast_roundtrip_preserves_effort_plan_and_config() -> Result<()> 
     server.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn native_model_waits_for_confirmation_and_preserves_plan_and_config() -> Result<()> {
+    let mut app = make_test_app().await;
+    let home = tempfile::tempdir_in("/tmp")?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    app.config.sqlite = codex_state::SqliteConfig::new_for_testing(home.path().abs());
+    let config_path = home.path().join("config.toml");
+    std::fs::write(&config_path, "model_reasoning_effort = \"high\"\n")?;
+    let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let started = server.start_thread(&app.config).await?;
+    let thread = started.session.thread_id;
+    app.chat_widget
+        .handle_thread_session_quiet(started.session.clone());
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    // A fresh idle TUI keeps this boundary until its first keypress. It must
+    // not prevent a settings-only dial request before the user starts typing.
+    app.startup_protected_input_boundary = true;
+    let config_before = std::fs::read_to_string(&config_path)?;
+    app.chat_widget
+        .set_collaboration_mask(CollaborationModeMask {
+            name: "Plan".into(),
+            mode: Some(ModeKind::Plan),
+            model: None,
+            reasoning_effort: Some(Some(ReasoningEffortConfig::High)),
+            developer_instructions: None,
+        });
+    let tui = crate::tui::test_support::make_test_tui()?;
+    let mut control = crate::local_control::LocalControl::start(home.path(), "test".into())?;
+    let before = app.local_control_snapshot(&tui);
+    assert_eq!(before["ready"], serde_json::json!(true));
+    control.publish(before);
+    let choices = app.local_control_snapshot(&tui)["models"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let choice = choices
+        .iter()
+        .find(|choice| {
+            choice["model"] != app.chat_widget.current_model()
+                && choice["levels"]
+                    .as_array()
+                    .is_some_and(|levels| levels.contains(&serde_json::json!("low")))
+        })
+        .expect("catalog has an alternative model");
+    let model = choice["model"].as_str().unwrap().to_string();
+    let request = crate::local_control::ModelRequest {
+        model: model.clone(),
+        request_id: uuid::Uuid::new_v4(),
+        expected_revision: control.revision,
+        expected_thread_id: thread.to_string(),
+        effort: ReasoningEffortConfig::Low,
+    };
+    app.apply_local_settings(&tui, &mut server, &mut control, request.into())
+        .await;
+    assert!(
+        control.pending.is_some(),
+        "write acceptance must not be treated as confirmation"
+    );
+    let updated = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+        loop {
+            if let Some(event @ AppServerEvent::ServerNotification(_)) = server.next_event().await {
+                control.observe(&event);
+                if let AppServerEvent::ServerNotification(notification) = event
+                    && let ServerNotification::ThreadSettingsUpdated(updated) = *notification
+                    && updated.thread_id == thread.to_string()
+                    && updated.thread_settings.effort == Some(ReasoningEffortConfig::Low)
+                    && updated.thread_settings.model == model
+                {
+                    break updated;
+                }
+            }
+        }
+    })
+    .await?;
+    assert!(control.pending.is_none());
+    app.chat_widget.on_thread_settings_updated(updated);
+    assert_eq!(
+        app.chat_widget.current_reasoning_effort(),
+        Some(ReasoningEffortConfig::Low)
+    );
+    assert_eq!(
+        app.chat_widget.effective_collaboration_mode().mode,
+        ModeKind::Plan
+    );
+    assert_eq!(std::fs::read_to_string(config_path)?, config_before);
+    assert_eq!(app.chat_widget.current_model(), model);
+    server.shutdown().await?;
+    Ok(())
+}

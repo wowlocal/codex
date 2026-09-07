@@ -22,10 +22,26 @@ pub(crate) struct FastRequest {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelRequest {
+    pub request_id: Uuid,
+    pub expected_revision: u64,
+    pub expected_thread_id: String,
+    pub model: String,
+    pub effort: ReasoningEffort,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SettingsChange {
     Effort(ReasoningEffort),
-    Fast { enabled: bool },
+    Model {
+        model: String,
+        effort: ReasoningEffort,
+    },
+    Fast {
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,6 +71,20 @@ impl From<FastRequest> for SettingsRequest {
             expected_thread_id: request.expected_thread_id,
             change: SettingsChange::Fast {
                 enabled: request.enabled,
+            },
+        }
+    }
+}
+
+impl From<ModelRequest> for SettingsRequest {
+    fn from(request: ModelRequest) -> Self {
+        Self {
+            request_id: request.request_id,
+            expected_revision: request.expected_revision,
+            expected_thread_id: request.expected_thread_id,
+            change: SettingsChange::Model {
+                model: request.model,
+                effort: request.effort,
             },
         }
     }
