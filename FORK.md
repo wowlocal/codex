@@ -63,7 +63,7 @@ cached task switches; no title parsing, keyboard injection, or external
 app-server proxy is involved. The initial implementation is Unix-only.
 
 The JSONL protocol is version 1. `status/read` returns the current task ID,
-effective model/effort, supported effort choices, collaboration mode, focus,
+effective model/effort, service tier, supported effort choices, collaboration mode, focus,
 readiness, activity and context usage. `status/subscribe` sends an initial
 snapshot and subsequent changes. Responses are wrapped in `{"result": ...}`.
 The `revision` changes when the control target or its settings/readiness/focus
@@ -76,6 +76,15 @@ thread settings operation. Explicit supported Max/Ultra values are permitted;
 keyboard shortcut behavior is unchanged. This changes next-turn settings and
 preserves Plan mode and unrelated settings without persisting global defaults.
 
+Submit `fast/set` with the same request identity/selection fields and an explicit
+`enabled` boolean. `status/read` advertises `serviceTier` and `fastServiceTier`;
+the latter is null when the current model/account cannot select Fast. Enabling
+uses the advertised tier ID; disabling sends explicit `default` routing, so a
+Fast-by-default model stays disabled. The ordinary settings notification confirms
+the change. Both commands preserve the visible Plan mask, including before its
+first turn, without writing config.toml. Existing CLI processes must restart to
+load this endpoint.
+
 `request/read` with the same `requestId` reports `pending`, `applied`,
 `rejected`, or `unconfirmed`. Applied means a matching native settings event
 was observed (or the requested setting already held). Queued does not mean
@@ -84,7 +93,7 @@ stream or a 30-second confirmation deadline is unconfirmed, not success.
 The last 64 requests are retained for the lifetime of that TUI instance.
 Repeating an identical retained request returns its result without another
 write; reusing its ID with different parameters is rejected. Unknown/expired
-IDs must not be blindly resubmitted. One effort request can be pending at once.
+IDs must not be blindly resubmitted. One settings request can be pending at once, shared by both controls.
 
 Rendezvous directories are private and owner-checked; peers must have the same
 UID. Frames are bounded to 4096 bytes, connections to eight, and writes have a
