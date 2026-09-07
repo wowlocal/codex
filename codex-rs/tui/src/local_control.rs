@@ -30,6 +30,7 @@ use uuid::Uuid;
 mod request;
 pub(crate) use request::EffortRequest;
 pub(crate) use request::FastRequest;
+pub(crate) use request::ModelRequest;
 pub(crate) use request::SettingsChange;
 pub(crate) use request::SettingsRequest;
 
@@ -42,6 +43,8 @@ enum Request {
     Subscribe,
     #[serde(rename = "effort/set")]
     Set(EffortRequest),
+    #[serde(rename = "model/set")]
+    Model(ModelRequest),
     #[serde(rename = "fast/set")]
     Fast(FastRequest),
     #[serde(rename = "request/read")]
@@ -193,6 +196,7 @@ impl LocalControl {
             "fastServiceTier",
             "collaborationMode",
             "supportedEfforts",
+            "models",
             "ready",
             "focused",
         ]
@@ -305,6 +309,10 @@ async fn serve(
         let result = match request {
             Ok(Request::Status | Request::Subscribe) => state.borrow_and_update().clone(),
             Ok(Request::Set(request)) => requests
+                .lock()
+                .map_err(|_| io::Error::other("request state unavailable"))?
+                .enqueue(request.into(), &tx),
+            Ok(Request::Model(request)) => requests
                 .lock()
                 .map_err(|_| io::Error::other("request state unavailable"))?
                 .enqueue(request.into(), &tx),
