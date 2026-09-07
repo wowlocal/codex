@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use tokio::io::AsyncBufReadExt;
 
@@ -40,7 +41,10 @@ async fn reconnect_recovers_same_request_without_dispatching_twice() {
         pending,
         json!({"requestId":request.request_id,"status":"pending"})
     );
-    assert_eq!(control.commands.recv().await.unwrap(), request);
+    assert_eq!(
+        control.commands.recv().await.unwrap(),
+        request.clone().into()
+    );
     drop(first);
     control.finish(request.request_id, json!({"effort":"high"}));
     let mut second = BufReader::new(UnixStream::connect(path).await.unwrap());
@@ -145,9 +149,12 @@ async fn only_matching_native_settings_confirm_request() {
         .requests
         .lock()
         .unwrap()
-        .enqueue(request.clone(), &tx);
+        .enqueue(request.clone().into(), &tx);
     rx.recv().await.unwrap();
-    control.pending = Some((request.clone(), "test-model".into()));
+    control.pending = Some((
+        request.clone().into(),
+        json!({"model":"test-model","effort":"high"}),
+    ));
     let mut updated = ThreadSettingsUpdatedNotification {
         thread_id: "background".into(),
         thread_settings: ThreadSettings {
@@ -189,4 +196,46 @@ async fn only_matching_native_settings_confirm_request() {
         "outcome":{"threadId":request.expected_thread_id,"model":"test-model","effort":"high"}})
     );
     assert!(control.pending.is_none());
+}
+
+#[tokio::test]
+async fn fast_write_reconnect_is_idempotent_and_shares_effort_queue() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let mut control = LocalControl::start(home.path(), "test".into()).unwrap();
+    let path = control.directory.join("control.sock");
+    let mut stream = BufReader::new(UnixStream::connect(&path).await.unwrap());
+    let id = Uuid::new_v4();
+    let command = json!({"method":"fast/set","requestId":id,"expectedRevision":1,
+        "expectedThreadId":"visible","enabled":true});
+    assert_eq!(
+        exchange(&mut stream, command.clone()).await,
+        json!({"requestId":id,"status":"pending"})
+    );
+    let received = control.commands.recv().await.unwrap();
+    assert_eq!(received.change, SettingsChange::Fast { enabled: true });
+    let mut effort = serde_json::to_value(request()).unwrap();
+    effort["method"] = "effort/set".into();
+    assert_eq!(
+        exchange(&mut stream, effort).await,
+        json!({"error":"another settings request is pending"})
+    );
+    drop(stream);
+    control.finish(id, json!({"serviceTier":"priority"}));
+    let mut stream = BufReader::new(UnixStream::connect(&path).await.unwrap());
+    assert_eq!(
+        exchange(&mut stream, command).await,
+        json!({"requestId":id,"status":"applied","outcome":{"serviceTier":"priority"}})
+    );
+    assert!(control.commands.try_recv().is_err());
+    let mut invalid = json!({"method":"fast/set","requestId":id,"expectedRevision":1,
+        "expectedThreadId":"visible","enabled":false});
+    assert_eq!(
+        exchange(&mut stream, invalid.clone()).await,
+        json!({"error":"request ID reused with different parameters"})
+    );
+    invalid["effort"] = "high".into();
+    assert_eq!(
+        exchange(&mut stream, invalid).await,
+        json!({"error":"invalid control request"})
+    );
 }
