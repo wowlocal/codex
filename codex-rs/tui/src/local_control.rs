@@ -12,9 +12,7 @@ use std::time::Instant;
 
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ServerNotification;
-use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
-use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -28,14 +26,12 @@ use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct EffortRequest {
-    pub request_id: Uuid,
-    pub expected_revision: u64,
-    pub expected_thread_id: String,
-    pub effort: ReasoningEffort,
-}
+#[path = "local_control_request.rs"]
+mod request;
+pub(crate) use request::EffortRequest;
+pub(crate) use request::FastRequest;
+pub(crate) use request::SettingsChange;
+pub(crate) use request::SettingsRequest;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", deny_unknown_fields)]
@@ -46,6 +42,8 @@ enum Request {
     Subscribe,
     #[serde(rename = "effort/set")]
     Set(EffortRequest),
+    #[serde(rename = "fast/set")]
+    Fast(FastRequest),
     #[serde(rename = "request/read")]
     Read {
         #[serde(rename = "requestId")]
@@ -54,10 +52,10 @@ enum Request {
 }
 
 #[derive(Default)]
-struct Requests(VecDeque<(EffortRequest, Value)>);
+struct Requests(VecDeque<(SettingsRequest, Value)>);
 
 impl Requests {
-    fn enqueue(&mut self, request: EffortRequest, tx: &mpsc::Sender<EffortRequest>) -> Value {
+    fn enqueue(&mut self, request: SettingsRequest, tx: &mpsc::Sender<SettingsRequest>) -> Value {
         if let Some((original, result)) = self
             .0
             .iter()
@@ -70,7 +68,7 @@ impl Requests {
             };
         }
         if self.0.iter().any(|(_, r)| r["status"] == "pending") {
-            return json!({"error":"another effort request is pending"});
+            return json!({"error":"another settings request is pending"});
         }
         if self.0.len() == 64 {
             self.0.pop_front();
@@ -95,8 +93,8 @@ pub(crate) struct LocalControl {
     metadata: Value,
     snapshot: watch::Sender<Value>,
     requests: Arc<Mutex<Requests>>,
-    pub commands: mpsc::Receiver<EffortRequest>,
-    pub pending: Option<(EffortRequest, String)>,
+    pub commands: mpsc::Receiver<SettingsRequest>,
+    pub pending: Option<(SettingsRequest, Value)>,
     pub submitted_at: Option<Instant>,
     listener: JoinHandle<()>,
     pub revision: u64,
@@ -191,6 +189,8 @@ impl LocalControl {
             "threadId",
             "model",
             "effort",
+            "serviceTier",
+            "fastServiceTier",
             "collaborationMode",
             "supportedEfforts",
             "ready",
@@ -227,7 +227,7 @@ impl LocalControl {
     }
 
     pub fn observe(&mut self, event: &AppServerEvent) {
-        let Some((request, model)) = &self.pending else {
+        let Some((request, expected)) = &self.pending else {
             return;
         };
         match event {
@@ -236,9 +236,14 @@ impl LocalControl {
                     if updated.thread_id == request.expected_thread_id =>
                 {
                     let settings = &updated.thread_settings;
-                    if settings.model == *model && settings.effort.as_ref() == Some(&request.effort)
-                    {
-                        self.finish(request.request_id, json!({"threadId":updated.thread_id,"model":settings.model,"effort":settings.effort}));
+                    let actual = json!({"model":settings.model,"effort":settings.effort,
+                        "serviceTier":settings.service_tier});
+                    if expected.as_object().is_some_and(|fields| {
+                        fields.iter().all(|(key, value)| actual[key] == *value)
+                    }) {
+                        let mut outcome = expected.clone();
+                        outcome["threadId"] = json!(updated.thread_id);
+                        self.finish(request.request_id, outcome);
                     }
                 }
                 ServerNotification::ThreadClosed(closed)
@@ -271,7 +276,7 @@ impl Drop for LocalControl {
 
 async fn serve(
     stream: UnixStream,
-    tx: mpsc::Sender<EffortRequest>,
+    tx: mpsc::Sender<SettingsRequest>,
     mut state: watch::Receiver<Value>,
     requests: Arc<Mutex<Requests>>,
 ) -> io::Result<()> {
@@ -302,7 +307,11 @@ async fn serve(
             Ok(Request::Set(request)) => requests
                 .lock()
                 .map_err(|_| io::Error::other("request state unavailable"))?
-                .enqueue(request, &tx),
+                .enqueue(request.into(), &tx),
+            Ok(Request::Fast(request)) => requests
+                .lock()
+                .map_err(|_| io::Error::other("request state unavailable"))?
+                .enqueue(request.into(), &tx),
             Ok(Request::Read { request_id }) => requests
                 .lock()
                 .map_err(|_| io::Error::other("request state unavailable"))?
