@@ -6480,6 +6480,13 @@
       "description": "Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.",
       "type": "boolean"
     },
+    "env": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Process environment loaded by the CLI before starting network clients.",
+      "type": "object"
+    },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
     },
