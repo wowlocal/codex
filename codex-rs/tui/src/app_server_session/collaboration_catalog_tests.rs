@@ -66,7 +66,7 @@ async fn collaboration_catalog_is_optional_and_refetched_on_bootstrap() -> Resul
             Ok::<_, color_eyre::Report>(catalog_requests)
         });
         let mut session = AppServerSession::new(
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Remote,
         );
         let initial = session.bootstrap(&config).await?;
