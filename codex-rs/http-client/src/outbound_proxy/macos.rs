@@ -171,7 +171,15 @@ fn proxy_array_decision(
     // replay semantics and is intentionally deferred.
     for proxy in proxies {
         match proxy_entry_decision(&proxy, target_url, origin) {
-            ProxyEntryDecision::Direct => return SystemProxyDecision::Direct,
+            ProxyEntryDecision::Direct => {
+                return if saw_unsupported || saw_unavailable {
+                    SystemProxyDecision::Unavailable {
+                        failure: RouteFailureClass::ProxyResolutionUnavailable,
+                    }
+                } else {
+                    SystemProxyDecision::Direct
+                };
+            }
             ProxyEntryDecision::Proxy { url } => return SystemProxyDecision::Proxy { url },
             ProxyEntryDecision::UnsupportedScheme => saw_unsupported = true,
             ProxyEntryDecision::Unavailable => saw_unavailable = true,
