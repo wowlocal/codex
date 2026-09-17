@@ -38,38 +38,61 @@ struct ProxyConfig {
     http: Option<ProxyAddress>,
     https: Option<ProxyAddress>,
     all: Option<ProxyAddress>,
+    configuration_error: Option<&'static str>,
 }
 
 impl ProxyConfig {
     fn from_env() -> Self {
-        let http = read_proxy_env(&["HTTP_PROXY", "http_proxy"]);
-        let https = read_proxy_env(&["HTTPS_PROXY", "https_proxy"]);
-        let all = read_proxy_env(&["ALL_PROXY", "all_proxy"]);
-        Self { http, https, all }
+        let read = |key: &str| std::env::var(key).ok();
+        let parse = || -> Result<Self, &'static str> {
+            Ok(Self {
+                http: read_proxy_env(&["HTTP_PROXY", "http_proxy"], read)?,
+                https: read_proxy_env(&["HTTPS_PROXY", "https_proxy"], read)?,
+                all: read_proxy_env(&["ALL_PROXY", "all_proxy"], read)?,
+                configuration_error: None,
+            })
+        };
+        parse().unwrap_or_else(|error| Self {
+            configuration_error: Some(error),
+            ..Self::default()
+        })
     }
 
-    fn proxy_for_protocol(&self, is_secure: bool) -> Option<ProxyAddress> {
-        if is_secure {
+    fn proxy_for_protocol(&self, is_secure: bool) -> Result<Option<ProxyAddress>, OpaqueError> {
+        if let Some(error) = self.configuration_error {
+            return Err(OpaqueError::from_display(error));
+        }
+        Ok(if is_secure {
             self.https
                 .clone()
-                .or_else(|| self.http.clone())
                 .or_else(|| self.all.clone())
+                .or_else(|| self.http.clone())
         } else {
-            self.http.clone().or_else(|| self.all.clone())
-        }
+            self.http
+                .clone()
+                .or_else(|| self.all.clone())
+                .or_else(|| self.https.clone())
+        })
     }
 
-    fn proxy_for_target(&self, target: &HostWithPort, is_secure: bool) -> Option<ProxyAddress> {
+    fn proxy_for_target(
+        &self,
+        target: &HostWithPort,
+        is_secure: bool,
+    ) -> Result<Option<ProxyAddress>, OpaqueError> {
         if is_non_public_target(&target.host) {
-            return None;
+            return Ok(None);
         }
         self.proxy_for_protocol(is_secure)
     }
 }
 
-fn read_proxy_env(keys: &[&str]) -> Option<ProxyAddress> {
+fn read_proxy_env(
+    keys: &[&str],
+    read: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ProxyAddress>, &'static str> {
     for key in keys {
-        let Ok(value) = std::env::var(key) else {
+        let Some(value) = read(key) else {
             continue;
         };
         let value = value.trim();
@@ -84,19 +107,21 @@ fn read_proxy_env(keys: &[&str]) -> Option<ProxyAddress> {
                     .map(rama_net::Protocol::is_http)
                     .unwrap_or(true)
                 {
-                    return Some(proxy);
+                    return Ok(Some(proxy));
                 }
-                warn!("ignoring {key}: non-http proxy protocol");
+                return Err("unsupported upstream proxy protocol; refusing direct connection");
             }
-            Err(err) => {
-                warn!("ignoring {key}: invalid proxy address ({err})");
+            Err(_) => {
+                return Err("invalid upstream proxy address; refusing direct connection");
             }
         }
     }
-    None
+    Ok(None)
 }
 
-pub(crate) fn proxy_for_connect(target: &HostWithPort) -> Option<ProxyAddress> {
+pub(crate) fn proxy_for_connect(
+    target: &HostWithPort,
+) -> Result<Option<ProxyAddress>, OpaqueError> {
     ProxyConfig::from_env().proxy_for_target(target, /*is_secure*/ true)
 }
 
@@ -187,7 +212,7 @@ impl Service<Request<Body>> for UpstreamClient {
                 self.proxy_config
                     .proxy_for_target(&ctx.host_with_port(), ctx.protocol.is_secure())
             },
-        );
+        )?;
         match proxy.as_ref() {
             Some(proxy) => info!(
                 "HTTP upstream route selected (target={authority}, route=upstream_proxy, proxy={})",

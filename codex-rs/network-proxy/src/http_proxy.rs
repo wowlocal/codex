@@ -474,11 +474,13 @@ where
         Ok(allowed) => allowed,
         Err(err) => {
             error!("failed to read upstream proxy setting: {err}");
-            false
+            return Err(OpaqueError::from_display(
+                "upstream proxy setting unavailable",
+            ));
         }
     };
     let proxy = if allow_upstream_proxy {
-        proxy_for_connect(&authority)
+        proxy_for_connect(&authority)?
     } else {
         None
     };
