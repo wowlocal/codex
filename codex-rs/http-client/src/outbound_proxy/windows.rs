@@ -59,17 +59,11 @@ pub(super) fn resolve(request_url: &str, origin: &RequestOrigin) -> SystemProxyD
     };
 
     if let Some(pac_url) = ie_config.auto_config_url.as_deref() {
-        let decision = resolve_with_pac_url(request_url, origin, pac_url);
-        if !matches!(decision, SystemProxyDecision::Unavailable { .. }) {
-            return decision;
-        }
+        return resolve_with_pac_url(request_url, origin, pac_url);
     }
 
     if ie_config.auto_detect {
-        let decision = resolve_with_auto_detect(request_url, origin);
-        if !matches!(decision, SystemProxyDecision::Unavailable { .. }) {
-            return decision;
-        }
+        return resolve_with_auto_detect(request_url, origin);
     }
 
     if let Some(proxy) = ie_config.static_proxy.as_deref() {
@@ -83,13 +77,7 @@ pub(super) fn resolve(request_url: &str, origin: &RequestOrigin) -> SystemProxyD
         return proxy_list_decision(proxy, origin);
     }
 
-    if ie_config.auto_config_url.is_some() || ie_config.auto_detect {
-        SystemProxyDecision::Unavailable {
-            failure: RouteFailureClass::ProxyResolutionUnavailable,
-        }
-    } else {
-        SystemProxyDecision::Direct
-    }
+    SystemProxyDecision::Direct
 }
 
 fn resolve_with_pac_url(
@@ -193,11 +181,8 @@ fn current_user_ie_proxy_config() -> Result<IeProxyConfig, RouteFailureClass> {
     if ok == FALSE {
         let error = last_error();
         if error == ERROR_FILE_NOT_FOUND {
-            // Match WinHTTP's fallback by attempting WPAD when no IE proxy settings exist.
-            return Ok(IeProxyConfig {
-                auto_detect: true,
-                ..Default::default()
-            });
+            // No configured route is different from failure of an explicitly enabled WPAD route.
+            return Ok(IeProxyConfig::default());
         }
         return Err(classify_winhttp_error(error));
     }

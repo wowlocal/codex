@@ -38,6 +38,37 @@ use crate::WebSocketConnector;
 use crate::WebSocketTlsMode;
 
 #[tokio::test]
+async fn failed_explicit_proxy_with_unrelated_no_proxy_never_dials_origin() {
+    for scheme in ["http", "https", "socks5"] {
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("{scheme}://{}", proxy.local_addr().unwrap());
+        drop(proxy);
+        let request = format!("ws://{}/private", origin.local_addr().unwrap())
+            .into_client_request()
+            .unwrap();
+        let result = connect(
+            request,
+            WebSocketConfig::default(),
+            /*tls_config*/ None,
+            OutboundProxyRoute::Proxy {
+                url: proxy_url,
+                no_proxy: Some("unrelated.invalid".into()),
+            },
+            TcpNodelay::Default,
+            /*loopback_direct*/ false,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(/*millis*/ 50), origin.accept())
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn public_connector_uses_factory_and_exposes_stream_and_sink() {
     let (target_addr, target_task) = start_echo_websocket_server(/*acceptor*/ None).await;
     let request = format!("ws://localhost:{}/v1/responses", target_addr.port())

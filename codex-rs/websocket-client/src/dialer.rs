@@ -42,7 +42,17 @@ pub(crate) async fn connect(
     loopback_direct: bool,
 ) -> Result<(ConnectionInner, Response), WebSocketError> {
     let disable_nagle = tcp_nodelay == TcpNodelay::Enabled;
+    let proxy_route = if proxy_route.bypasses(&request.uri().to_string()) {
+        OutboundProxyRoute::Direct
+    } else {
+        proxy_route
+    };
     let proxy_url = match proxy_route {
+        OutboundProxyRoute::Unavailable => {
+            return Err(WebSocketError::Io(io::Error::other(
+                "outbound proxy discovery failed; direct fallback is disabled",
+            )));
+        }
         OutboundProxyRoute::TransportDefault => {
             // The workspace enables tokio-tungstenite's `proxy` feature, so its default dialer
             // resolves HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, and NO_PROXY before opening the socket.
@@ -56,32 +66,7 @@ pub(crate) async fn connect(
             return Ok((ConnectionInner::Left(stream), response));
         }
         OutboundProxyRoute::Direct => None,
-        OutboundProxyRoute::Proxy {
-            url,
-            no_proxy: None,
-        } => Some(url),
-        OutboundProxyRoute::Proxy {
-            url,
-            no_proxy: Some(_),
-        } => {
-            // Let Tungstenite apply its complete NO_PROXY semantics. Its environment parser does
-            // not accept HTTPS proxy URLs, but that error occurs only after it decides the target
-            // is not bypassed, so retry that case through the explicit TLS-to-proxy path below.
-            match connect_async_tls_with_config(
-                request.clone(),
-                Some(config),
-                disable_nagle,
-                tls_config.clone().map(Connector::Rustls),
-            )
-            .await
-            {
-                Ok((stream, response)) => {
-                    return Ok((ConnectionInner::Left(stream), response));
-                }
-                Err(WebSocketError::Url(UrlError::UnsupportedProxyScheme)) => Some(url),
-                Err(error) => return Err(error),
-            }
-        }
+        OutboundProxyRoute::Proxy { url, .. } => Some(url),
     };
 
     let stream: Box<dyn AsyncIo> = match proxy_url {
