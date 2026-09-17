@@ -3,28 +3,32 @@
 This branch keeps its product changes narrow and uses the upstream release pipeline wherever
 possible. The current fork-specific behavior is:
 
-- the MCP Apps browser bridge;
-- HTTPS environment-proxy support for Responses WebSocket connections; and
-- a local launcher that gives the Codex process and its built-in MCP clients the same proxy
-  environment.
+- the MCP Apps browser bridge, including reconnect recovery;
+- required proxy routing for HTTP, Responses and Realtime WebSocket clients;
+- startup `[env]` loading in the CLI binary; and
+- native TUI settings control compatible with BUSY Codex protocol version 1.
+
+The current base is upstream `rust-v0.154.0`; the fork version is `0.154.0-fork.1`.
+The port starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
+loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
 
 ## Proxy-aware launcher
 
-Codex and Reqwest honor standard process environment variables such as `HTTPS_PROXY`,
-`HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY`. A top-level `[env]` table in `config.toml` does not become
-the environment of the Codex process by itself. This matters for `codex_apps`: if Codex starts
-without the proxy variables, the MCP handshake can take a direct route even while a separately
-launched test process works through a proxy.
+The CLI loads the top-level `[env]` table in the user config before starting its runtime,
+including when the binary is launched directly. Inherited variables take precedence. Proxy
+variables accept uppercase or lowercase names; uppercase wins when both are inherited. Both
+spellings are synchronized before clients start. Invalid configuration stops startup without
+printing proxy credentials. TOML strings and comments are parsed by the TOML parser.
+An unreadable explicitly selected `CODEX_FORK_CONFIG` or malformed TOML stops every CLI
+subcommand, including `exec-server`: ignoring it could silently discard the configured proxy.
 
 [`scripts/run-codex-fork.sh`](scripts/run-codex-fork.sh) provides a Codex-only launch boundary. It:
 
-1. preserves proxy variables already present in the process environment;
-2. fills missing proxy variables from the `[env]` table in
-   `${CODEX_HOME:-$HOME/.codex}/config.toml`;
-3. never prints proxy values; and
-4. executes `codex-rs/target/release/codex` without adding another long-lived process.
+1. enables native TUI control unless explicitly disabled; and
+2. executes `bin/codex` in a release package or `codex-rs/target/release/codex` in a source
+   checkout. Environment loading and validation belong to the binary.
 
-The expected local configuration uses one-line, double-quoted values:
+For example:
 
 ```toml
 [env]
@@ -49,8 +53,29 @@ To make it the global command while keeping the launcher in version control:
 ln -s /absolute/path/to/codex/scripts/run-codex-fork.sh ~/.cargo/bin/codex
 ```
 
-Use `CODEX_FORK_CONFIG` to test another config file and `CODEX_FORK_BINARY` to select another built
-binary. These overrides are launcher-only and are not Codex configuration keys.
+Use `CODEX_FORK_CONFIG` to select another file for startup environment loading and
+`CODEX_FORK_BINARY` to select another binary in the launcher. Neither is a config.toml key.
+
+Explicit environment proxies take precedence over system routing, including a system `DIRECT`
+decision, even when the upstream `respect_system_proxy` feature is disabled. That feature still
+controls system/PAC discovery when no environment proxy is set. If only one HTTP(S) proxy is
+configured, it covers both schemes; `ALL_PROXY` is the
+fallback for a missing scheme-specific entry. Connection failures, authentication failures,
+TLS errors and unavailable system proxy discovery fail without retrying a direct route.
+Switching from Responses WebSocket to HTTP still uses the configured proxy. Explicit
+`NO_PROXY` destinations and dedicated loopback IPC remain direct. This is application routing,
+not a system firewall: browsers and independently launched programs own their network policy.
+
+OTLP/gRPC telemetry refuses to initialize when an environment proxy is configured, because
+its Tonic transport cannot honor that proxy. Use OTLP/HTTP for logs, traces and metrics instead;
+this conservative gRPC restriction also applies to destinations listed in `NO_PROXY`.
+
+The managed command proxy also refuses direct fallback when its enabled HTTP(S) upstream is
+invalid or unavailable. Its existing local/private-target bypass and explicit
+`allow_upstream_proxy` policy remain unchanged. Unsupported upstream schemes fail closed.
+
+Realtime uses the same connector and session HTTP factory as Responses, including TLS-to-proxy
+and custom certificate authorities. This restores the functionality from `b66720601b`.
 
 ## Native TUI settings control (Unix)
 
@@ -99,7 +124,7 @@ stream or a 30-second confirmation deadline is unconfirmed, not success.
 The last 64 requests are retained for the lifetime of that TUI instance.
 Repeating an identical retained request returns its result without another
 write; reusing its ID with different parameters is rejected. Unknown/expired
-IDs must not be blindly resubmitted. One settings request can be pending at once, shared by both controls.
+IDs must not be blindly resubmitted. One settings request can be pending at once across all controls.
 
 Rendezvous directories are private and owner-checked; peers must have the same
 UID. Frames are bounded to 4096 bytes, connections to eight, and writes have a
@@ -109,7 +134,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.151.0-fork.<short-sha>`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.154.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -127,3 +152,29 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Port validation (2026-09-17, macOS Apple Silicon)
+
+- The affected-crate run covered config, network-proxy, API, MCP, TUI, CLI and
+  app-server-client: 5,728 tests ran. The two CLI failures were fixed and rechecked;
+  four unchanged terminal-color tests passed after removing the test runner's
+  `NO_COLOR` override. Their snapshots did not need changes.
+- The subsequent CLI, HTTP/WebSocket and targeted core Realtime/system-proxy run
+  passed all 710 selected tests. Regression tests verify that a reachable origin
+  receives no connection when a configured proxy is unavailable or rejects it.
+- The remaining 22 network-proxy failures are DNS-environment dependent: this Mac
+  resolves public test names such as `example.com` to `240.0.2.17`, so existing
+  destination-policy checks reject them before forwarding. The destination policy
+  was not weakened to make these tests pass.
+- BUSY Codex's native client/model-menu/effort suites passed all 35 tests. An isolated
+  live TUI also passed effort, Fast and model roundtrips, Plan/config preservation,
+  focus checks, reconnect/replay recovery and stale-task rejection. No model prompt
+  was submitted and no physical Bar workers were restarted.
+- All 63 OTEL tests passed, including a subprocess regression verifying that gRPC
+  logs, traces and metrics refuse every supported spelling of the proxy environment
+  variables without connecting to an otherwise reachable collector.
+- Config schema generation and `just bazel-lock-update` completed; the Bazel lock
+  remained unchanged. The ordinary CLI binary reports `0.154.0-fork.1`.
+
+The full workspace suite and native Windows/Linux checks were not run. This port
+does not replace the installed binary or publish the branch automatically.
