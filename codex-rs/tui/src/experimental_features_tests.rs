@@ -215,10 +215,13 @@ async fn experimental_feature_writes_use_server_defaults_and_refresh_configured_
                     .unwrap();
             }
         });
-        let client = crate::connect_remote_app_server(RemoteAppServerEndpoint::WebSocket {
-            websocket_url: url,
-            auth_token: None,
-        })
+        let client = crate::connect_remote_app_server(
+            RemoteAppServerEndpoint::WebSocket {
+                websocket_url: url,
+                auth_token: None,
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
         let handle = client.request_handle();

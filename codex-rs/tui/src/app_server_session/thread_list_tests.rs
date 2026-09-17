@@ -58,7 +58,7 @@ async fn thread_list_preserves_filters_and_retries_only_legacy_cwd_errors() -> R
             expected.push(fallback);
         }
         let mut session = AppServerSession::new(
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Embedded,
         );
         let result = session.thread_list(params).await;

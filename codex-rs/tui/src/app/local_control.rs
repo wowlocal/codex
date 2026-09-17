@@ -18,6 +18,7 @@ impl App {
             && thread == self.chat_widget.thread_id()
             && thread == self.active_thread_id
             && !self.reconnect.offline
+            && thread.is_some_and(|id| !self.thread_unavailable(id))
             && !self.chat_widget.has_active_view()
             && self.overlay.is_none()
             && !self.startup_pending_protected_request

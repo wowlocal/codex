@@ -5,6 +5,29 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn native_control_is_not_ready_for_a_replay_only_remote_thread() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let started = server.start_thread(&app.config).await?;
+    let thread = started.session.thread_id;
+    app.chat_widget
+        .handle_thread_session_quiet(started.session.clone());
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    let tui = crate::tui::test_support::make_test_tui()?;
+    app.app_server_target = AppServerTarget::Remote {
+        endpoint: crate::resolve_remote_addr("ws://127.0.0.1:9")?,
+    };
+    let mut expected = app.local_control_snapshot(&tui);
+    assert_eq!(expected["ready"], true);
+    app.ensure_thread_channel(thread).mark_replay_only();
+    expected["ready"] = false.into();
+    assert_eq!(app.local_control_snapshot(&tui), expected);
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_effort_waits_for_settings_event_and_preserves_plan_and_config() -> Result<()> {
     let mut app = make_test_app().await;
     let home = tempfile::tempdir_in("/tmp")?;

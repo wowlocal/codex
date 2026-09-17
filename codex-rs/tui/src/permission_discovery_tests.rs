@@ -115,10 +115,13 @@ async fn discovery_preserves_config_scope_and_bounds_server_requests() {
             }
             requests
         });
-        let client = crate::connect_remote_app_server(crate::RemoteAppServerEndpoint::WebSocket {
-            websocket_url,
-            auth_token: None,
-        })
+        let client = crate::connect_remote_app_server(
+            crate::RemoteAppServerEndpoint::WebSocket {
+                websocket_url,
+                auth_token: None,
+            },
+            Default::default(),
+        )
         .await
         .unwrap();
         let session = AppServerSession::new(client, mode)
