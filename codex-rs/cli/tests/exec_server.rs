@@ -84,14 +84,16 @@ foo = "bar"
 }
 
 #[test]
-fn local_exec_server_ignores_invalid_config_without_strict_config() -> Result<()> {
+fn local_exec_server_rejects_unreadable_startup_environment_without_disclosing_config() -> Result<()>
+{
     let codex_home = TempDir::new()?;
     std::fs::write(codex_home.path().join("config.toml"), "not valid toml = [")?;
 
     let mut cmd = codex_command(codex_home.path())?;
     cmd.args(["exec-server", "--listen", "stdio"])
         .assert()
-        .success()
+        .failure()
+        .stderr(contains("Error loading config.toml"))
         .stderr(contains("not valid toml").not());
 
     Ok(())
