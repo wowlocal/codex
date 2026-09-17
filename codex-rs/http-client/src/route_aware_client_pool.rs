@@ -137,6 +137,9 @@ impl RouteAwareRequestError {
             Self::Route(RouteAwareClientPoolError::Build(
                 BuildRouteAwareHttpClientError::InvalidProxyConfig { .. },
             )) => Some(RouteFailureClass::InvalidProxyConfig),
+            Self::Route(RouteAwareClientPoolError::Build(
+                BuildRouteAwareHttpClientError::ProxyUnavailable { .. },
+            )) => Some(RouteFailureClass::ProxyResolutionUnavailable),
             Self::Route(RouteAwareClientPoolError::Resolve(_)) => {
                 Some(RouteFailureClass::ProxyResolutionUnavailable)
             }

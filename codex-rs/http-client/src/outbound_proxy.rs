@@ -1,8 +1,7 @@
 //! Conservative outbound proxy selection for resolver-aware HTTP clients.
 //!
-//! When enabled, platform system discovery is tried first, explicit environment
-//! proxies are the fallback, and the final fallback is a direct connection.
-//! When disabled, callers retain the existing reqwest builder behavior.
+//! Explicit environment proxies take precedence over system discovery. Once a proxy is
+//! selected, transport failures are returned without retrying a direct route.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -99,7 +98,7 @@ impl fmt::Display for RouteFailureClass {
 pub enum OutboundProxyPolicy {
     /// Preserve reqwest's built-in proxy behavior.
     ReqwestDefault,
-    /// Resolve system/PAC/WPAD settings, then environment settings, then direct routing.
+    /// Resolve explicit environment proxies, then system/PAC/WPAD settings.
     RespectSystemProxy,
 }
 
@@ -126,12 +125,14 @@ pub fn macos_system_proxy_configuration(request_url: &str) -> MacosSystemProxyCo
 /// Resolved proxy route for a concrete outbound destination.
 ///
 /// `TransportDefault` preserves the underlying transport behavior only when system-proxy support
-/// is disabled. When system resolution is enabled, environment and direct fallbacks are resolved
+/// is disabled and no explicit environment proxy is set. Otherwise routes are resolved
 /// explicitly so the transport cannot repeat system discovery. Proxy URLs and no-proxy settings
 /// are intentionally redacted from `Debug` output because they may contain credentials or private
 /// hostnames.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum OutboundProxyRoute {
+    /// Proxy discovery failed; opening a direct connection is forbidden.
+    Unavailable,
     /// Preserve the underlying transport's existing proxy behavior.
     TransportDefault,
     /// Connect directly and bypass transport-level proxy discovery.
@@ -143,9 +144,26 @@ pub enum OutboundProxyRoute {
     },
 }
 
+impl OutboundProxyRoute {
+    /// Whether this explicit proxy route exempts the destination via its own NO_PROXY list.
+    /// Does not inspect the environment again or change the selected proxy.
+    pub fn bypasses(&self, request_url: &str) -> bool {
+        let Self::Proxy {
+            no_proxy: Some(no_proxy),
+            ..
+        } = self
+        else {
+            return false;
+        };
+        RequestOrigin::parse(&proxy_resolution_url(request_url))
+            .is_some_and(|origin| no_proxy_matches_origin(no_proxy, &origin))
+    }
+}
+
 impl fmt::Debug for OutboundProxyRoute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unavailable => f.write_str("Unavailable"),
             Self::TransportDefault => f.write_str("TransportDefault"),
             Self::Direct => f.write_str("Direct"),
             Self::Proxy { .. } => f
@@ -226,9 +244,8 @@ impl HttpClientFactory {
     /// Resolves the proxy route for a concrete destination.
     ///
     /// WebSocket schemes are resolved through their HTTP equivalents so platform PAC and system
-    /// proxy APIs apply the same policy to `ws`/`wss` and `http`/`https` destinations. When system
-    /// resolution is unavailable, explicit environment settings are resolved before falling back
-    /// to a direct route.
+    /// proxy APIs apply the same policy to `ws`/`wss` and `http`/`https` destinations. Explicit
+    /// environment settings take precedence; failed system resolution cannot select a direct route.
     pub fn resolve_proxy_route(&self, request_url: &str) -> OutboundProxyRoute {
         resolve_proxy_route(
             &ProcessEnv,
@@ -243,6 +260,11 @@ impl HttpClientFactory {
         &self,
         request_url: String,
     ) -> io::Result<OutboundProxyRoute> {
+        let env_route =
+            resolve_env_proxy_route(&ProcessEnv, EnvProxyKind::from_request_url(&request_url));
+        if matches!(env_route, OutboundProxyRoute::Proxy { .. }) {
+            return Ok(env_route);
+        }
         if matches!(
             self.outbound_proxy_policy,
             OutboundProxyPolicy::ReqwestDefault
@@ -275,12 +297,10 @@ impl HttpClientFactory {
         }
     }
 
-    /// Resolves a WebSocket destination while preserving native proxy handling where possible.
+    /// Resolves a WebSocket destination with explicit environment proxy routing.
     ///
-    /// Tungstenite handles ordinary HTTP and SOCKS environment proxies itself, but rejects HTTPS
-    /// and scheme-less proxy URLs. When system-proxy support is disabled, those two forms are
-    /// resolved explicitly so WebSocket connections retain the environment behavior used by HTTP
-    /// clients. System-resolved routes use the normal policy and only normalize scheme-less URLs.
+    /// Resolving once prevents transport-level discovery from replacing the selected proxy.
+    /// Scheme-less URLs are normalized for the connector, which also supports TLS-to-proxy.
     pub async fn resolve_websocket_proxy_route_async(
         &self,
         request_url: String,
@@ -338,6 +358,10 @@ fn resolve_proxy_route(
     outbound_proxy_policy: OutboundProxyPolicy,
     resolve_system_proxy: impl FnOnce(&str, &RequestOrigin) -> SystemProxyDecision,
 ) -> OutboundProxyRoute {
+    let env_route = resolve_env_proxy_route(env, EnvProxyKind::from_request_url(request_url));
+    if matches!(env_route, OutboundProxyRoute::Proxy { .. }) {
+        return env_route;
+    }
     if matches!(outbound_proxy_policy, OutboundProxyPolicy::ReqwestDefault) {
         return OutboundProxyRoute::TransportDefault;
     }
@@ -360,13 +384,17 @@ fn route_from_system_decision(
     env_proxy_kind: EnvProxyKind,
     decision: SystemProxyDecision,
 ) -> OutboundProxyRoute {
+    let env_route = resolve_env_proxy_route(env, env_proxy_kind);
+    if matches!(env_route, OutboundProxyRoute::Proxy { .. }) {
+        return env_route;
+    }
     match decision {
         SystemProxyDecision::Direct => OutboundProxyRoute::Direct,
         SystemProxyDecision::Proxy { url } => OutboundProxyRoute::Proxy {
             url,
             no_proxy: None,
         },
-        SystemProxyDecision::Unavailable { .. } => resolve_env_proxy_route(env, env_proxy_kind),
+        SystemProxyDecision::Unavailable { .. } => OutboundProxyRoute::Unavailable,
     }
 }
 
@@ -386,15 +414,15 @@ fn resolve_env_proxy_route(
 
 fn env_proxy_url(env: &dyn EnvSource, env_proxy_kind: EnvProxyKind) -> Option<String> {
     match env_proxy_kind {
-        EnvProxyKind::Https => {
-            proxy_env_value(env, "HTTPS_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
-        }
+        EnvProxyKind::Https => proxy_env_value(env, "HTTPS_PROXY")
+            .or_else(|| proxy_env_value(env, "ALL_PROXY"))
+            .or_else(|| proxy_env_value(env, "HTTP_PROXY")),
         EnvProxyKind::SecureWebSocket => proxy_env_value(env, "HTTPS_PROXY")
             .or_else(|| proxy_env_value(env, "HTTP_PROXY"))
             .or_else(|| proxy_env_value(env, "ALL_PROXY")),
-        EnvProxyKind::Http => {
-            proxy_env_value(env, "HTTP_PROXY").or_else(|| proxy_env_value(env, "ALL_PROXY"))
-        }
+        EnvProxyKind::Http => proxy_env_value(env, "HTTP_PROXY")
+            .or_else(|| proxy_env_value(env, "ALL_PROXY"))
+            .or_else(|| proxy_env_value(env, "HTTPS_PROXY")),
         EnvProxyKind::Other => proxy_env_value(env, "ALL_PROXY"),
     }
 }
@@ -411,7 +439,7 @@ fn resolve_transport_default_websocket_proxy_route(
     let url = match proxy_url_scheme(proxy_url).as_deref() {
         Some("https") => proxy_url.to_string(),
         None => format!("http://{proxy_url}"),
-        Some(_) => return OutboundProxyRoute::TransportDefault,
+        Some(_) => proxy_url.to_string(),
     };
     OutboundProxyRoute::Proxy {
         url,
@@ -472,6 +500,8 @@ fn proxy_resolution_url(request_url: &str) -> Cow<'_, str> {
 /// Error while building a resolver-aware reqwest client.
 #[derive(Debug, Error)]
 pub enum BuildRouteAwareHttpClientError {
+    #[error("Outbound proxy discovery failed for {route_class}; direct fallback is disabled")]
+    ProxyUnavailable { route_class: ClientRouteClass },
     #[error(transparent)]
     CustomCa(#[from] BuildCustomCaTransportError),
 
@@ -483,15 +513,16 @@ impl From<BuildRouteAwareHttpClientError> for io::Error {
     fn from(error: BuildRouteAwareHttpClientError) -> Self {
         match error {
             BuildRouteAwareHttpClientError::CustomCa(error) => error.into(),
-            BuildRouteAwareHttpClientError::InvalidProxyConfig { .. } => io::Error::other(error),
+            BuildRouteAwareHttpClientError::InvalidProxyConfig { .. }
+            | BuildRouteAwareHttpClientError::ProxyUnavailable { .. } => io::Error::other(error),
         }
     }
 }
 
 /// Builds a reqwest client with conservative route selection and shared CA handling.
 ///
-/// Unavailable platform resolution falls back to environment proxies and then direct. Errors after
-/// a route is selected are returned without trying another route. Ordered PAC candidates are
+/// Explicit environment proxies take precedence over platform resolution. Discovery failures and
+/// errors after a route is selected are returned without trying a direct route. PAC candidates are
 /// currently collapsed to one route on both Windows and macOS; later proxy or `DIRECT` candidates
 /// are not retried after a connection failure.
 fn build_reqwest_client_for_route(
@@ -534,6 +565,9 @@ fn configure_builder_for_resolved_route(
     route: &OutboundProxyRoute,
 ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
     match route {
+        OutboundProxyRoute::Unavailable => {
+            Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class })
+        }
         OutboundProxyRoute::TransportDefault => Ok(builder),
         OutboundProxyRoute::Direct => Ok(builder.no_proxy()),
         OutboundProxyRoute::Proxy { url, no_proxy } => {
@@ -639,9 +673,8 @@ fn resolve_platform_system_proxy(
     _request_url: &str,
     _origin: &RequestOrigin,
 ) -> SystemProxyDecision {
-    SystemProxyDecision::Unavailable {
-        failure: RouteFailureClass::ProxyResolutionUnavailable,
-    }
+    // This platform has no system discovery; explicit environment routes were handled first.
+    SystemProxyDecision::Direct
 }
 
 #[derive(Debug, Clone)]
@@ -729,7 +762,6 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
     no_proxy
         .split(',')
@@ -738,7 +770,6 @@ fn no_proxy_matches_origin(no_proxy: &str, origin: &RequestOrigin) -> bool {
         .any(|entry| no_proxy_entry_matches_origin(entry, origin))
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     if entry == "*" {
         return true;
@@ -779,7 +810,6 @@ fn no_proxy_entry_matches_origin(entry: &str, origin: &RequestOrigin) -> bool {
     origin.host == entry
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn wildcard_host_match(pattern: &str, host: &str) -> bool {
     let mut remaining = host;
     let mut first = true;
@@ -815,18 +845,33 @@ enum ParsedProxyListDecision {
 #[cfg(any(test, target_os = "windows"))]
 fn parse_proxy_list(input: &str, target_scheme: &str) -> ParsedProxyListDecision {
     let mut saw_unsupported = false;
+    let mut saw_unavailable = false;
 
     {
         let mut process_token = |token: &str| {
+            // A route for another scheme is not a failed candidate for this destination.
+            if token
+                .split_once('=')
+                .is_some_and(|(key, _)| !key.trim().eq_ignore_ascii_case(target_scheme))
+            {
+                return None;
+            }
             let decision = parse_proxy_token(token, target_scheme);
             match decision {
-                ParsedProxyListDecision::Direct => Some(ParsedProxyListDecision::Direct),
+                ParsedProxyListDecision::Direct => Some(if saw_unsupported || saw_unavailable {
+                    ParsedProxyListDecision::Unavailable
+                } else {
+                    ParsedProxyListDecision::Direct
+                }),
                 ParsedProxyListDecision::Proxy(url) => Some(ParsedProxyListDecision::Proxy(url)),
                 ParsedProxyListDecision::UnsupportedScheme => {
                     saw_unsupported = true;
                     None
                 }
-                ParsedProxyListDecision::Unavailable => None,
+                ParsedProxyListDecision::Unavailable => {
+                    saw_unavailable = true;
+                    None
+                }
             }
         };
 
