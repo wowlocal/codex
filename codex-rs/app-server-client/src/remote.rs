@@ -215,7 +215,12 @@ impl RemoteAppServerClient {
                 "local daemon requires a Unix socket",
             ));
         }
-        Self::connect_with_policy(args, SocketPeerPolicy::NonElevatedCurrentUser, client_extensions).await
+        Self::connect_with_policy(
+            args,
+            SocketPeerPolicy::NonElevatedCurrentUser,
+            client_extensions,
+        )
+        .await
     }
 
     async fn connect_with_policy(
