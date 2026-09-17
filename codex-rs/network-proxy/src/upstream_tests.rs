@@ -125,6 +125,7 @@ fn inherited_upstream_proxy_is_bypassed_for_non_public_targets() {
         http: Some(proxy.clone()),
         https: Some(proxy),
         all: None,
+        ..ProxyConfig::default()
     };
 
     for target in [
@@ -132,14 +133,85 @@ fn inherited_upstream_proxy_is_bypassed_for_non_public_targets() {
         HostWithPort::new(Host::LOCALHOST_IPV4, 8080),
         HostWithPort::new(Host::Address("10.0.0.1".parse().unwrap()), 8080),
     ] {
-        assert_eq!(config.proxy_for_target(&target, /*is_secure*/ false), None);
-        assert_eq!(config.proxy_for_target(&target, /*is_secure*/ true), None);
+        assert_eq!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ false)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ true)
+                .unwrap(),
+            None
+        );
     }
 
     let public = HostWithPort::new(Host::EXAMPLE_NAME, 443);
     assert!(
         config
             .proxy_for_target(&public, /*is_secure*/ true)
+            .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn invalid_upstream_proxy_is_an_error_without_trying_another_spelling() {
+    for value in ["http://[invalid", "socks5://secret:password@localhost:1080"] {
+        let error = read_proxy_env(&["HTTPS_PROXY", "https_proxy"], |key| {
+            assert_eq!(key, "HTTPS_PROXY");
+            Some(value.to_string())
+        })
+        .unwrap_err();
+        assert!(!error.contains(value));
+        let config = ProxyConfig {
+            configuration_error: Some(error),
+            ..ProxyConfig::default()
+        };
+        let target = HostWithPort::new(Host::EXAMPLE_NAME, /*port*/ 443);
+        assert!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ true)
+                .is_err()
+        );
+        assert!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ false)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn a_single_upstream_proxy_covers_both_protocols() {
+    let proxy = ProxyAddress::try_from("http://127.0.0.1:43128").unwrap();
+    let target = HostWithPort::new(Host::EXAMPLE_NAME, /*port*/ 443);
+    for config in [
+        ProxyConfig {
+            http: Some(proxy.clone()),
+            ..ProxyConfig::default()
+        },
+        ProxyConfig {
+            https: Some(proxy.clone()),
+            ..ProxyConfig::default()
+        },
+        ProxyConfig {
+            all: Some(proxy.clone()),
+            ..ProxyConfig::default()
+        },
+    ] {
+        assert_eq!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ true)
+                .unwrap(),
+            Some(proxy.clone())
+        );
+        assert_eq!(
+            config
+                .proxy_for_target(&target, /*is_secure*/ false)
+                .unwrap(),
+            Some(proxy.clone())
+        );
+    }
 }
