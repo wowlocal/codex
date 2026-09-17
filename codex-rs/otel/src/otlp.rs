@@ -31,6 +31,27 @@ pub(crate) fn build_header_map(headers: &std::collections::HashMap<String, Strin
     header_map
 }
 
+/// Tonic does not honor environment proxies. Refuse this transport instead of leaking telemetry.
+/// OTLP/HTTP remains available, including its normal explicit NO_PROXY exemptions.
+pub(crate) fn ensure_grpc_proxy_compatible() -> Result<(), Box<dyn Error>> {
+    if [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    .into_iter()
+    .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()))
+    {
+        return Err(config_error(
+            "OTLP/gRPC cannot honor the configured proxy; use OTLP/HTTP instead of a direct connection",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_grpc_tls_config(
     endpoint: &str,
     tls_config: ClientTlsConfig,

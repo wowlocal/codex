@@ -595,6 +595,12 @@ fn build_otlp_metric_exporter(
         } => {
             debug!("Using OTLP Grpc exporter for metrics: {endpoint}");
 
+            crate::otlp::ensure_grpc_proxy_compatible().map_err(|error| {
+                MetricsError::InvalidConfig {
+                    message: error.to_string(),
+                }
+            })?;
+
             let header_map = crate::otlp::build_header_map(&headers);
 
             let base_tls_config = ClientTlsConfig::new()
