@@ -459,6 +459,8 @@ fn build_logger(
         } => {
             debug!("Using OTLP Grpc exporter: {endpoint}");
 
+            crate::otlp::ensure_grpc_proxy_compatible()?;
+
             let header_map = crate::otlp::build_header_map(&headers);
 
             let base_tls_config = ClientTlsConfig::new()
@@ -540,6 +542,8 @@ fn build_tracer_provider(
             tls,
         } => {
             debug!("Using OTLP Grpc exporter for traces: {endpoint}");
+
+            crate::otlp::ensure_grpc_proxy_compatible()?;
 
             let header_map = crate::otlp::build_header_map(&headers);
 
