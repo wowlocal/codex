@@ -17,6 +17,8 @@ use tracing_subscriber::layer::SubscriberExt;
 
 #[path = "outbound_proxy_redirect_coverage_tests.rs"]
 mod redirect_coverage_tests;
+#[path = "outbound_proxy_required_tests.rs"]
+mod required_proxy_tests;
 
 struct MapEnv {
     values: HashMap<String, String>,
@@ -216,7 +218,7 @@ fn transport_default_websocket_route_intercepts_unsupported_environment_proxy_ur
 }
 
 #[test]
-fn transport_default_websocket_route_preserves_native_proxy_schemes() {
+fn transport_default_websocket_route_pins_native_proxy_schemes() {
     for proxy_url in [
         "http://proxy.example:8080",
         "socks5://proxy.example:1080",
@@ -231,7 +233,10 @@ fn transport_default_websocket_route_preserves_native_proxy_schemes() {
                 &env,
                 "wss://api.openai.com/v1/responses",
             ),
-            OutboundProxyRoute::TransportDefault
+            OutboundProxyRoute::Proxy {
+                url: proxy_url.to_string(),
+                no_proxy: None
+            }
         );
     }
 }
@@ -309,7 +314,7 @@ fn environment_fallback_reads_injected_proxy_environment() {
 }
 
 #[test]
-fn unavailable_system_route_resolves_environment_or_direct_explicitly() {
+fn unavailable_system_route_uses_explicit_proxy_or_fails_closed() {
     let env = MapEnv {
         values: HashMap::from([
             (
@@ -343,7 +348,7 @@ fn unavailable_system_route_resolves_environment_or_direct_explicitly() {
                 failure: RouteFailureClass::ProxyResolutionUnavailable,
             },
         ),
-        OutboundProxyRoute::Direct
+        OutboundProxyRoute::Unavailable
     );
 }
 
