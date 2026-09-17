@@ -609,7 +609,7 @@ impl McpConnectionSet {
                             cache_context.begin_fetch(ConnectorRuntimeFetchSource::HardRefresh)
                         },
                     );
-                    let client_tools = list_tools_for_client_uncached(
+                    let mut client_tools = list_tools_for_client_uncached(
                         CODEX_APPS_MCP_SERVER_NAME,
                         /*is_codex_apps_mcp_server*/ true,
                         /*codex_apps_refresh_trigger*/ "explicit",
@@ -624,6 +624,9 @@ impl McpConnectionSet {
                             "failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"
                         )
                     })?;
+                    if !managed_client.mcp_apps_negotiated {
+                        strip_mcp_app_resource_metadata_from_tools(&mut client_tools);
+                    }
                     Ok((client_tools, (fetch_ticket, list_start)))
                 },
                 |client_tools, (fetch_ticket, list_start)| {
