@@ -73,6 +73,7 @@ mod queue_cmd;
 mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
+mod startup_env;
 mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
@@ -1116,6 +1117,8 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
+    // SAFETY: no runtime or application threads exist before startup initialization.
+    unsafe { startup_env::apply()? };
     codex_build_info::initialize!();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
