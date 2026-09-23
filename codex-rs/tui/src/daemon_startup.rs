@@ -122,9 +122,10 @@ pub(super) async fn compatibility_warning(
         return Some("Running without the shared background server: code-mode host fallback policy requires embedded mode.".to_string());
     }
     let check = async {
-        let client = app_server_connection::connect(target)
-            .await
-            .map_err(|_| "could not connect to check daemon feature settings".to_string())?;
+        let client =
+            app_server_connection::connect(target, crate::mcp_apps_client_extensions(config))
+                .await
+                .map_err(|_| "could not connect to check daemon feature settings".to_string())?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         crate::experimental_features::fetch(
             client.request_handle(),
