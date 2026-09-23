@@ -348,6 +348,9 @@ fn doctor_redacts_failed_database_paths_in_json() -> Result<()> {
 #[test]
 fn doctor_reports_only_safe_config_error_metadata() -> Result<()> {
     let fixture = Fixture::new()?;
+    // Keep startup [env] valid so these cases reach doctor's configuration diagnostics.
+    let startup_config = fixture.home.join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     let user_config_file = fixture.home.join("config.toml");
     let original = std::fs::read_to_string(&user_config_file)?;
     // macOS temp directories can use a symlinked path; trust the canonical workspace.
@@ -389,7 +392,11 @@ fn doctor_reports_only_safe_config_error_metadata() -> Result<()> {
             vec!["doctor", "--json"],
             vec!["doctor", "--json", "--feedback"],
         ] {
-            let output = fixture.command()?.args(args).output()?;
+            let output = fixture
+                .command()?
+                .env("CODEX_FORK_CONFIG", &startup_config)
+                .args(args)
+                .output()?;
             assert_eq!(output.status.code(), Some(1));
             let report: Value = serde_json::from_slice(&output.stdout)?;
             let mut check = report["checks"]["config.load"].clone();
@@ -474,6 +481,9 @@ extends = ":read-only"
 #[test]
 fn filesystem_probe_does_not_load_configuration() -> Result<()> {
     let fixture = Fixture::new()?;
+    // The fork's startup configuration is validated before the diagnostic subcommand runs.
+    let startup_config = fixture.home.join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     std::fs::write(fixture.home.join("config.toml"), "invalid TOML = [")?;
     for (path, expected) in [
         (&fixture.workspace, 0),
@@ -481,6 +491,7 @@ fn filesystem_probe_does_not_load_configuration() -> Result<()> {
     ] {
         let output = fixture
             .command()?
+            .env("CODEX_FORK_CONFIG", &startup_config)
             .args(["doctor", "--probe-filesystem-path"])
             .arg(path)
             .output()?;

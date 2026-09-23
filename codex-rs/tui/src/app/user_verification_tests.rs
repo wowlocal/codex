@@ -154,7 +154,7 @@ async fn run_verification_rpc_scenario(scenario: RpcScenario) -> color_eyre::Res
         }
         color_eyre::eyre::bail!("connection closed before the elicitation response")
     });
-    let client = crate::connect_remote_app_server(endpoint).await?;
+    let client = crate::connect_remote_app_server(endpoint, Default::default()).await?;
     let mode = if scenario == RpcScenario::RemoteWorkspace {
         app.chat_widget
             .handle_elicitation_request_now(request_id.clone(), params.clone());

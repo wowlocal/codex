@@ -8,7 +8,10 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.154.0`; the fork version is `0.154.0-fork.1`.
+The current base is upstream `rust-v0.156.1`; the fork version is `0.156.1-fork.1`.
+The 2026-09-23 port rebases all 19 commits from `8822eed9c7` onto that release,
+preserving the MCP Apps bridge, required proxy routing, startup environment loading,
+and BUSY native TUI controls.
 The port starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
 loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
 
@@ -134,7 +137,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.154.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.156.1-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -152,6 +155,34 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Port validation (2026-09-23, macOS Apple Silicon)
+
+- Rebased the 19 fork commits onto stable upstream `rust-v0.156.1` and adapted new
+  daemon connection and test call sites to retain MCP Apps capabilities.
+- Preserved Windows platform TLS validation when Realtime uses the shared
+  proxy-aware connector. An invalid custom CA still fails without falling back
+  to system trust; that path has regression coverage.
+- The affected-crate run covered 7,253 tests. After adapting diagnostic fixtures,
+  reviewing three TUI snapshots, and removing inherited proxy variables from the
+  test runner, all 164 selected rechecks passed, including every initial failure.
+  The additional diagnostic regression also passed. Production proxy handling
+  was not relaxed.
+- The diagnostic tests use a valid explicit startup configuration to exercise
+  upstream doctor's handling of malformed regular configuration. A separate CLI
+  regression verifies that malformed startup configuration still blocks both
+  doctor modes without exposing credentials.
+- Scoped `just fix` completed without warnings; `just fmt` completed successfully.
+- `just write-config-schema` and `just bazel-lock-update` produced no schema or
+  Bazel lock drift.
+- macOS 27 rejects some Rust proc-macro dylibs stripped during compilation. Local
+  test builds used `CARGO_PROFILE_DEV_STRIP=none` and
+  `CARGO_PROFILE_TEST_STRIP=none`, with debug information and incremental builds
+  disabled to limit disk usage. Release uses the unchanged upstream profile and
+  strips binaries only after archiving their symbols.
+
+The full workspace suite and native Windows/Linux checks were not run. Signing,
+notarization, and final artifact checks are recorded with the release artifacts.
 
 ## Port validation (2026-09-17, macOS Apple Silicon)
 
