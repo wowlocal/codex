@@ -1484,7 +1484,7 @@ async fn remote_overview_startup_hides_disabled_older_server_notice() -> Result<
     });
     let session = AppServerSession::new(
         crate::backend_id::BackendId::new(),
-        crate::connect_remote_app_server(endpoint).await?,
+        crate::connect_remote_app_server(endpoint, Default::default()).await?,
         ThreadParamsMode::Remote,
     );
 

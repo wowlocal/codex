@@ -156,7 +156,7 @@ pub(super) async fn compatibility_warning(
     let mut restart_features = None;
     let check = async {
         // Connect even without overrides so startup can recover from an unreachable daemon.
-        let client = app_server_connection::connect(target)
+        let client = app_server_connection::connect(target, crate::mcp_apps_client_extensions(config))
             .await
             .map_err(|_| "could not connect to check daemon feature settings".to_string())?;
         if requested.is_empty() {
