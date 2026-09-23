@@ -108,6 +108,7 @@ stream_max_retries = 0
                         /*collaboration_mode*/ None,
                         /*output_schema*/ None,
                         /*cyber_access_program*/ None,
+                        Default::default(),
                     )
                     .await?;
                 tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 30), async {

@@ -1,6 +1,36 @@
 use std::process::Command;
 
 use codex_utils_cargo_bin::cargo_bin;
+use pretty_assertions::assert_eq;
+
+#[test]
+fn doctor_rejects_malformed_startup_configuration_without_exposing_credentials()
+-> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[env]\nHTTPS_PROXY = 'https://user:secret@proxy.invalid' trailing\n",
+    )?;
+    for args in [
+        vec!["doctor", "--json"],
+        vec!["doctor", "--probe-filesystem-path", "."],
+    ] {
+        let output = Command::new(cargo_bin("codex")?)
+            .args(args)
+            .env("CODEX_HOME", home.path())
+            .env_remove("CODEX_FORK_CONFIG")
+            .output()?;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr)?;
+        assert!(
+            error.contains("invalid startup [env] configuration"),
+            "{error}"
+        );
+        assert!(!error.contains("secret"));
+    }
+    Ok(())
+}
 
 #[test]
 fn explicitly_selected_missing_config_cannot_silently_disable_proxy_configuration()

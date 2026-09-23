@@ -158,6 +158,7 @@ async fn only_matching_native_settings_confirm_request() {
     let mut updated = ThreadSettingsUpdatedNotification {
         thread_id: "background".into(),
         thread_settings: ThreadSettings {
+            disabled_plugin_ids: Vec::new(),
             cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).unwrap(),
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,

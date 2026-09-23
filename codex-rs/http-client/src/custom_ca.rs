@@ -129,6 +129,11 @@ pub enum BuildCustomCaTransportError {
     #[error("Failed to build HTTP client while using system root certificates: {0}")]
     BuildClientWithSystemRoots(#[source] reqwest::Error),
 
+    /// Windows rejected the platform verifier used by proxy-aware WebSocket clients.
+    #[cfg(windows)]
+    #[error("Failed to build websocket TLS configuration using system trust: {0}")]
+    BuildRustlsClientWithSystemRoots(#[source] rustls::Error),
+
     /// One parsed certificate block could not be registered with the websocket TLS root store.
     #[error(
         "Failed to register certificate #{certificate_index} from {} selected by {} in rustls root store: {source}. {hint}",
@@ -147,6 +152,10 @@ pub enum BuildCustomCaTransportError {
 impl From<BuildCustomCaTransportError> for io::Error {
     fn from(error: BuildCustomCaTransportError) -> Self {
         match error {
+            #[cfg(windows)]
+            BuildCustomCaTransportError::BuildRustlsClientWithSystemRoots(_) => {
+                io::Error::other(error)
+            }
             BuildCustomCaTransportError::ReadCaFile { ref source, .. } => {
                 io::Error::new(source.kind(), error)
             }
@@ -236,6 +245,13 @@ fn build_rustls_client_config_with_env(
     env_source: &dyn EnvSource,
 ) -> Result<Arc<ClientConfig>, BuildCustomCaTransportError> {
     let bundle = env_source.configured_ca_bundle();
+    // Preserve Windows platform validation when Realtime uses the shared proxy-aware connector.
+    // Custom CA bundles continue to use the explicit root store below.
+    #[cfg(windows)]
+    if bundle.is_none() {
+        return crate::build_windows_platform_tls_config()
+            .map_err(BuildCustomCaTransportError::BuildRustlsClientWithSystemRoots);
+    }
     build_rustls_client_config(bundle.as_ref())
 }
 
@@ -724,6 +740,7 @@ mod tests {
     use super::CODEX_CA_CERT_ENV;
     use super::EnvSource;
     use super::SSL_CERT_FILE_ENV;
+    use super::build_rustls_client_config_with_env;
     use super::maybe_build_rustls_client_config_with_env;
 
     const TEST_CERT: &str = include_str!("../tests/fixtures/test-ca.pem");
@@ -811,6 +828,20 @@ mod tests {
         let env = map_env(&[(CODEX_CA_CERT_ENV, cert_path.to_string_lossy().as_ref())]);
 
         let error = maybe_build_rustls_client_config_with_env(&env).expect_err("invalid CA");
+
+        assert!(matches!(
+            error,
+            BuildCustomCaTransportError::InvalidCaFile { .. }
+        ));
+    }
+
+    #[test]
+    fn websocket_config_does_not_fall_back_to_system_trust_for_invalid_custom_ca() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let cert_path = write_cert_file(&temp_dir, "empty.pem", "");
+        let env = map_env(&[(CODEX_CA_CERT_ENV, cert_path.to_string_lossy().as_ref())]);
+
+        let error = build_rustls_client_config_with_env(&env).expect_err("invalid CA");
 
         assert!(matches!(
             error,
