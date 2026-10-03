@@ -109,6 +109,7 @@ pub(super) async fn load_app_resource(
                 server: descriptor.server.clone(),
                 uri: descriptor.resource_uri.clone(),
                 connector_id: descriptor.connector_id.clone(),
+                target: None,
             },
         })
         .await
@@ -191,6 +192,7 @@ async fn server_status(
                     cursor,
                     limit: Some(100),
                     detail: Some(McpServerStatusDetail::Full),
+                    server_name: None,
                     thread_id: Some(descriptor.thread_id.to_string()),
                 },
             })

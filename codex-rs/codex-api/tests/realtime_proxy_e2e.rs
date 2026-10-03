@@ -9,6 +9,8 @@ use codex_api::RealtimeSessionConfig;
 use codex_api::RealtimeSessionMode;
 use codex_api::RealtimeWebsocketClient;
 use codex_api::RetryConfig;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_protocol::protocol::RealtimeVoice;
 use http::HeaderMap;
 use pretty_assertions::assert_eq;
@@ -20,20 +22,23 @@ use tokio::net::TcpListener;
 async fn realtime_proxy_rejection_never_reaches_origin() -> anyhow::Result<()> {
     const ORIGIN: &str = "CODEX_TEST_REALTIME_PROXY_ORIGIN";
     if let Ok(base_url) = std::env::var(ORIGIN) {
-        let client = RealtimeWebsocketClient::new(Provider {
-            name: "proxy-test".into(),
-            base_url,
-            query_params: Some(HashMap::new()),
-            headers: HeaderMap::new(),
-            retry: RetryConfig {
-                max_attempts: 1,
-                base_delay: Duration::from_millis(/*millis*/ 1),
-                retry_429: false,
-                retry_5xx: false,
-                retry_transport: false,
+        let client = RealtimeWebsocketClient::new(
+            Provider {
+                name: "proxy-test".into(),
+                base_url,
+                query_params: Some(HashMap::new()),
+                headers: HeaderMap::new(),
+                retry: RetryConfig {
+                    max_attempts: 1,
+                    base_delay: Duration::from_millis(/*millis*/ 1),
+                    retry_429: false,
+                    retry_5xx: false,
+                    retry_transport: false,
+                },
+                stream_idle_timeout: Duration::from_secs(/*secs*/ 2),
             },
-            stream_idle_timeout: Duration::from_secs(/*secs*/ 2),
-        });
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        );
         let result = tokio::time::timeout(
             Duration::from_secs(/*secs*/ 3),
             client.connect(

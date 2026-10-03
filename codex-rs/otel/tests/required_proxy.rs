@@ -6,6 +6,8 @@ use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::process::Command;
 
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_otel::OtelExporter;
 use codex_otel::OtelProvider;
 use codex_otel::OtelSettings;
@@ -36,6 +38,7 @@ async fn grpc_exporters_never_bypass_env_proxy() -> Result<(), Box<dyn Error>> {
                 service_name: "proxy-test".into(),
                 service_version: "1".into(),
                 codex_home: std::env::temp_dir(),
+                http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
                 exporter: OtelExporter::None,
                 trace_exporter: OtelExporter::None,
                 metrics_exporter: OtelExporter::None,
