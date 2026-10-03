@@ -61,7 +61,7 @@ async fn external_agent_config_migration_over_shared_transport() -> Result<()> {
         });
         let mut session = AppServerSession::new(
             crate::backend_id::BackendId::new(),
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             mode,
         );
         let workspace = tempfile::tempdir()?;

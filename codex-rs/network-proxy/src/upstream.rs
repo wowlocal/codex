@@ -81,7 +81,11 @@ impl ProxyConfig {
         })
     }
 
-    fn proxy_for_target(&self, target: &HostWithPort, is_secure: bool) -> Result<Option<ProxyAddress>, OpaqueError> {
+    fn proxy_for_target(
+        &self,
+        target: &HostWithPort,
+        is_secure: bool,
+    ) -> Result<Option<ProxyAddress>, OpaqueError> {
         let proxy_private_ip = self.proxy_private_ips_via_upstream
             && matches!(&target.host, Host::Address(ip) if is_private_network_ip(*ip));
         if is_non_public_target(&target.host) && !proxy_private_ip {

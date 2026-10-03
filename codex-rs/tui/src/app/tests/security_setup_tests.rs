@@ -238,7 +238,7 @@ async fn security_setup_skips_unavailable_or_mismatched_server_notice() -> Resul
         });
         let server = AppServerSession::new(
             crate::backend_id::BackendId::new(),
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Embedded,
         );
         let (tx, mut events) = mpsc::unbounded_channel();
