@@ -217,7 +217,7 @@ async fn security_setup_skips_fetch_when_server_auth_does_not_match_saved_login(
             .await
         });
         let server = AppServerSession::new(
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Embedded,
         );
         let (tx, mut events) = mpsc::unbounded_channel();

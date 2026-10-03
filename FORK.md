@@ -8,10 +8,12 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.156.1`; the fork version is `0.156.1-fork.1`.
-The 2026-09-23 port rebases all 19 commits from `8822eed9c7` onto that release,
-preserving the MCP Apps bridge, required proxy routing, startup environment loading,
-and BUSY native TUI controls.
+The current base is upstream `rust-v0.160.0`; the fork version is `0.160.0-fork.1`.
+The 2026-10-03 port rebases the previous `0.156.1-fork.1` release (`77502086f2`)
+onto that release. Nineteen fork commits remain; upstream now implements the
+shared Realtime connector, replacing the former standalone routing commit.
+MCP Apps, required proxy routing, startup environment loading, and BUSY native
+TUI controls are preserved alongside upstream network-policy enforcement.
 The port starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
 loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
 
@@ -74,7 +76,7 @@ its Tonic transport cannot honor that proxy. Use OTLP/HTTP for logs, traces and 
 this conservative gRPC restriction also applies to destinations listed in `NO_PROXY`.
 
 The managed command proxy also refuses direct fallback when its enabled HTTP(S) upstream is
-invalid or unavailable. Its existing local/private-target bypass and explicit
+invalid or unavailable. Its loopback/local bypass, private-IP routing opt-in, and explicit
 `allow_upstream_proxy` policy remain unchanged. Unsupported upstream schemes fail closed.
 
 Realtime uses the same connector and session HTTP factory as Responses, including TLS-to-proxy
@@ -137,7 +139,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.156.1-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.160.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -155,6 +157,25 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Port validation (2026-10-03, macOS Apple Silicon)
+
+- Rebased the previous release onto stable upstream `rust-v0.160.0`. Preserved
+  upstream network permits, revocation handling, private-IP proxy routing policy,
+  and Windows TLS validation while retaining the fork's fail-closed proxy routes.
+- Adapted MCP resource/status requests to new optional fields and updated new
+  upstream connection tests to supply client extensions.
+- Ran 7,519 tests across CLI, TUI, config, HTTP, WebSocket, API, network-proxy,
+  telemetry, MCP, and app-server-client: 7,517 passed; only two update-dialog
+  snapshots needed the new fork version. Reviewed those two one-line changes;
+  all seven update-dialog tests passed on recheck. Ten tests were skipped.
+- The BUSY Codex native-client, effort, and model-menu suites passed all 35 tests.
+- Config schema regeneration and `just bazel-lock-update` completed without drift.
+- Scoped `just fix` and `just fmt` completed. Clippy retained one unrelated
+  upstream unused-import warning in `codex-core`; the fork added no warnings.
+
+The full workspace suite was omitted at the user's request. Native Windows/Linux
+checks were not run. Final build and signing checks are recorded with the release.
 
 ## Port validation (2026-09-23, macOS Apple Silicon)
 

@@ -117,7 +117,7 @@ async fn failed_close_status_read_reconnects_remote_or_closes_embedded() -> Resu
             .await
         });
         let session = AppServerSession::new(
-            crate::connect_remote_app_server(endpoint).await?,
+            crate::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Remote,
         );
         tokio::time::timeout(

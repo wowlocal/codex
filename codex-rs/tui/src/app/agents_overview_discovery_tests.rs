@@ -103,7 +103,7 @@ async fn check_discovery(mixed_sources: bool) -> Result<()> {
         Ok::<_, color_eyre::Report>(cursors)
     });
     let session = AppServerSession::new(
-        crate::connect_remote_app_server(endpoint).await?,
+        crate::connect_remote_app_server(endpoint, Default::default()).await?,
         ThreadParamsMode::Remote,
     );
     let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
