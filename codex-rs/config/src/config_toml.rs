@@ -160,13 +160,25 @@ pub struct FeatureToggleToml {
     pub enabled: Option<bool>,
 }
 
+/// Routing for the required upstream proxy, whose URL lives in the OS credential store.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct RequiredProxyToml {
+    /// Domains, private IP addresses and private CIDR ranges that bypass the proxy.
+    /// OpenAI destinations always use it.
+    pub direct: Option<Vec<String>>,
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
-    /// Process environment loaded by the CLI before starting network clients.
+    /// Process environment loaded by the CLI before startup. Proxy variables are rejected:
+    /// `codex proxy import` moves them into the OS credential store.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Routing for the required upstream proxy.
+    pub proxy: Option<RequiredProxyToml>,
     /// Optional override of model selection.
     pub model: Option<String>,
     /// Default Daybreak preference for new threads and non-interactive turns.

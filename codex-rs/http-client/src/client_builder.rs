@@ -331,7 +331,17 @@ impl HttpClientBuilder {
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
                         );
-                        reqwest::Client::new()
+                        if codex_required_proxy::is_active() {
+                            // `Client::new()` would discover a direct route.
+                            reqwest::Client::builder()
+                                .proxy(crate::outbound_proxy::required_reqwest_proxy())
+                                .build()
+                                .unwrap_or_else(|_| {
+                                    panic!("cannot build an HTTP client for the required proxy")
+                                })
+                        } else {
+                            reqwest::Client::new()
+                        }
                     })
             }
         };
@@ -351,6 +361,10 @@ impl HttpClientBuilder {
     fn reqwest_builder(self, proxy_routing: ProxyRouting) -> reqwest::ClientBuilder {
         let builder = self.base_reqwest_builder();
         match proxy_routing {
+            // reqwest discovers proxies from the environment, which never holds the required proxy.
+            ProxyRouting::TransportDefault if codex_required_proxy::is_active() => {
+                builder.proxy(crate::outbound_proxy::required_reqwest_proxy())
+            }
             ProxyRouting::TransportDefault => builder,
             ProxyRouting::Direct => builder.no_proxy(),
         }

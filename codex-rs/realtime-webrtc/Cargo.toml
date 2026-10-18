@@ -14,6 +14,7 @@ workspace = true
 codex-build-info = { workspace = true }
 anyhow = { workspace = true }
 codex-install-context = { workspace = true }
+codex-required-proxy = { workspace = true }
 codex-utils-pty = { workspace = true }
 futures = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }

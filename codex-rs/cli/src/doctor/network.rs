@@ -97,6 +97,7 @@ pub(super) fn with_system_proxy_remediation(
             .as_ref()
             .and_then(|requirements| requirements.value.entries.get("respect_system_proxy"))
             .is_none_or(|enabled| *enabled)
+        && !codex_required_proxy::is_active()
         && !super::PROXY_ENV_VARS
             .iter()
             .any(|name| !name.eq_ignore_ascii_case("NO_PROXY") && super::env_var_present(name))

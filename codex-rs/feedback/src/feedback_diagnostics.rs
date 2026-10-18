@@ -46,6 +46,8 @@ impl FeedbackDiagnostics {
             .iter()
             .filter_map(|key| {
                 let value = env.get(*key)?;
+                // Feedback leaves this machine; proxy credentials must not.
+                let value = codex_required_proxy::redact_url_credentials(value);
                 Some(format!("{key} = {value}"))
             })
             .collect::<Vec<_>>();
@@ -96,7 +98,7 @@ mod tests {
     use super::FeedbackDiagnostics;
 
     #[test]
-    fn collect_from_pairs_reports_raw_values_and_attachment() {
+    fn collect_from_pairs_redacts_credentials_in_values_and_attachment() {
         let diagnostics = FeedbackDiagnostics::collect_from_pairs([
             (
                 "HTTPS_PROXY",
@@ -114,8 +116,7 @@ mod tests {
                         .to_string(),
                     details: vec![
                         "http_proxy = proxy.example.com:8080".to_string(),
-                        "HTTPS_PROXY = https://user:password@secure-proxy.example.com:443?secret=1"
-                            .to_string(),
+                        "HTTPS_PROXY = https://[REDACTED]@secure-proxy.example.com:443".to_string(),
                         "all_proxy = socks5h://all-proxy.example.com:1080".to_string(),
                     ],
                 },],
@@ -129,7 +130,7 @@ mod tests {
 
 - Proxy environment variables are set and may affect connectivity.
   - http_proxy = proxy.example.com:8080
-  - HTTPS_PROXY = https://user:password@secure-proxy.example.com:443?secret=1
+  - HTTPS_PROXY = https://[REDACTED]@secure-proxy.example.com:443
   - all_proxy = socks5h://all-proxy.example.com:1080"#
                     .to_string()
             )

@@ -1,95 +1,61 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-#[test]
-fn parses_toml_and_covers_http_and_https_without_overriding_inherited_proxy() {
-    let values = resolve(
-        "[env]\nHTTPS_PROXY = 'https://configured.example:443' # comment\nCUSTOM = 'value'\n",
-        BTreeMap::from([("https_proxy".into(), "inherited.example:8080".into())]),
-    )
-    .unwrap();
-    assert_eq!(
-        values,
-        BTreeMap::from([
-            ("CUSTOM".into(), "value".into()),
-            ("HTTP_PROXY".into(), "http://inherited.example:8080".into()),
-            ("http_proxy".into(), "http://inherited.example:8080".into()),
-            ("HTTPS_PROXY".into(), "http://inherited.example:8080".into()),
-            ("https_proxy".into(), "http://inherited.example:8080".into()),
-        ])
-    );
+fn pairs(values: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+    values
+        .iter()
+        .map(|(key, value)| ((*key).into(), (*value).into()))
+        .collect()
 }
 
 #[test]
-fn invalid_proxy_fails_without_disclosing_credentials() {
-    for value in [
-        "https://secret@",
-        "ftp://user:secret@proxy.example",
-        "https://proxy.example/secret",
-    ] {
-        let error = resolve("", BTreeMap::from([("HTTPS_PROXY".into(), value.into())]))
-            .unwrap_err()
-            .to_string();
-        assert!(!error.contains("secret"));
-    }
-}
+fn proxy_settings_are_never_exported_and_inherited_credentials_are_removed() {
+    let resolved = resolve(
+        r#"
+[env]
+HTTPS_PROXY = "https://user:secret@proxy.example:443"
+no_proxy = "localhost"
+NPM_CONFIG_PROXY = "http://npm.example"
+EDITOR = "vim"
+PAGER = "less"
 
-#[test]
-fn proxy_credentials_are_normalized_for_uri_based_clients() {
-    let values = resolve(
-        "",
-        BTreeMap::from([(
-            "HTTPS_PROXY".into(),
-            "http://usér:päss@proxy.example:8080".into(),
-        )]),
-    )
-    .unwrap();
-    let normalized = "http://us%C3%A9r:p%C3%A4ss@proxy.example:8080";
-    assert_eq!(
-        values,
-        BTreeMap::from([
-            ("HTTP_PROXY".into(), normalized.into()),
-            ("http_proxy".into(), normalized.into()),
-            ("HTTPS_PROXY".into(), normalized.into()),
-            ("https_proxy".into(), normalized.into()),
-        ])
-    );
-}
-
-#[test]
-fn explicit_no_proxy_is_preserved_and_not_invented() {
-    let configured = resolve(
-        "[env]\nALL_PROXY = 'socks5h://proxy.example:1080'\nNO_PROXY = 'localhost,127.0.0.1'",
-        BTreeMap::new(),
-    )
-    .unwrap();
-    assert_eq!(
-        configured.get(&OsString::from("no_proxy")),
-        Some(&OsString::from("localhost,127.0.0.1"))
-    );
-    assert_eq!(resolve("", BTreeMap::new()).unwrap(), BTreeMap::new());
-}
-
-#[test]
-fn empty_uppercase_no_proxy_cannot_leave_a_lowercase_wildcard_active() {
-    let values = resolve(
-        "",
-        BTreeMap::from([
-            ("HTTPS_PROXY".into(), "http://proxy.example:8080".into()),
-            ("NO_PROXY".into(), "".into()),
-            ("no_proxy".into(), "*".into()),
+[proxy]
+direct = ["192.168.0.0/16", ".ts.net"]
+"#,
+        pairs(&[
+            ("PAGER", "more"),
+            ("http_proxy", "http://user:secret@inherited.example"),
+            ("ALL_PROXY", "http://127.0.0.1:3128"),
+            ("PATH", "/usr/bin"),
         ]),
     )
-    .unwrap();
+    .expect("valid startup configuration");
+
     assert_eq!(
-        values,
-        BTreeMap::from([
-            ("HTTP_PROXY".into(), "http://proxy.example:8080".into()),
-            ("http_proxy".into(), "http://proxy.example:8080".into()),
-            ("HTTPS_PROXY".into(), "http://proxy.example:8080".into()),
-            ("https_proxy".into(), "http://proxy.example:8080".into()),
-            ("NO_PROXY".into(), "".into()),
-            ("no_proxy".into(), "".into()),
-        ])
+        resolved,
+        Resolved {
+            set: pairs(&[("EDITOR", "vim")]),
+            remove: vec!["http_proxy".into()],
+            direct: vec!["192.168.0.0/16".to_string(), ".ts.net".to_string()],
+            env_proxy_keys: vec![
+                "HTTPS_PROXY".to_string(),
+                "NPM_CONFIG_PROXY".to_string(),
+                "no_proxy".to_string(),
+            ],
+        }
+    );
+}
+
+#[test]
+fn malformed_configuration_fails_without_disclosing_its_contents() {
+    let error = resolve(
+        "[env]\nHTTPS_PROXY = \"https://user:secret@proxy.example\n",
+        std::iter::empty(),
+    )
+    .expect_err("malformed TOML");
+
+    assert_eq!(
+        error.to_string(),
+        "Error loading config.toml: invalid startup [env] configuration"
     );
 }

@@ -1486,6 +1486,10 @@ fn stored_auth_issues(
 }
 
 fn push_proxy_env_details(details: &mut Vec<String>) {
+    // Doctor reports can be attached to feedback, so the proxy origin is not included.
+    if codex_required_proxy::is_active() {
+        details.push("required proxy: configured (system credential store)".to_string());
+    }
     let present_proxy_vars = PROXY_ENV_VARS
         .iter()
         .copied()

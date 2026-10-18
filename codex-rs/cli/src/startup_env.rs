@@ -1,7 +1,13 @@
-//! Load the fork's process environment before starting any runtime or network client.
+//! Load the fork's startup configuration before starting any runtime or network client.
+//!
+//! `[env]` entries become process environment variables. Proxy settings never do: the upstream
+//! proxy lives in the OS credential store (see `startup_proxy`), and inherited proxy variables
+//! that carry credentials are removed so child processes cannot observe them.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -10,120 +16,122 @@ use serde::Deserialize;
 struct StartupConfig {
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    proxy: ProxyTable,
+}
+
+#[derive(Default, Deserialize)]
+struct ProxyTable {
+    #[serde(default)]
+    direct: Vec<String>,
+}
+
+/// Proxy routing read from the startup configuration.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct StartupProxyConfig {
+    /// The configuration file that was read, which `codex proxy import` edits.
+    pub(super) path: PathBuf,
+    /// `[proxy] direct` entries.
+    pub(super) direct: Vec<String>,
+    /// `[env]` entries that configure a proxy and are therefore not exported.
+    pub(super) env_proxy_keys: Vec<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Resolved {
+    set: Vec<(OsString, OsString)>,
+    remove: Vec<OsString>,
+    direct: Vec<String>,
+    env_proxy_keys: Vec<String>,
 }
 
 /// Apply user configuration while the CLI is still single threaded.
 ///
 /// # Safety
 /// Must run before threads or the async runtime are started.
-pub(super) unsafe fn apply() -> anyhow::Result<()> {
+pub(super) unsafe fn apply() -> anyhow::Result<StartupProxyConfig> {
     let explicit_path = std::env::var_os("CODEX_FORK_CONFIG");
     let path = match explicit_path.as_ref() {
-        Some(path) => std::path::PathBuf::from(path),
+        Some(path) => PathBuf::from(path),
         None => codex_core::config::find_codex_home()?
             .join("config.toml")
             .to_path_buf(),
     };
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && explicit_path.is_none() => {
-            String::new()
-        }
-        Err(error) => return Err(error).context("cannot read startup environment configuration"),
-    };
-    let values = resolve(&contents, std::env::vars_os().collect())?;
-    for (key, value) in values {
-        if std::env::var_os(&key).as_ref() == Some(&value) {
-            continue;
-        }
+    let contents = read(&path, /*missing_is_empty*/ explicit_path.is_none())?;
+    let resolved = resolve(&contents, std::env::vars_os())?;
+    for key in resolved.remove {
+        // SAFETY: upheld by the single-threaded caller, before arg0 dispatch.
+        unsafe { std::env::remove_var(key) };
+    }
+    for (key, value) in resolved.set {
         // SAFETY: upheld by the single-threaded caller, before arg0 dispatch.
         unsafe { std::env::set_var(key, value) };
     }
-    Ok(())
+    Ok(StartupProxyConfig {
+        path,
+        direct: resolved.direct,
+        env_proxy_keys: resolved.env_proxy_keys,
+    })
+}
+
+/// Reads `[proxy] direct` again, for processes that follow proxy changes while running.
+pub(super) fn read_direct(path: &Path) -> anyhow::Result<Vec<String>> {
+    let contents = read(path, /*missing_is_empty*/ true)?;
+    Ok(resolve(&contents, std::iter::empty())?.direct)
+}
+
+/// Whether an environment variable configures a proxy.
+pub(super) fn is_proxy_key(key: &str) -> bool {
+    key.to_ascii_uppercase().contains("PROXY")
+}
+
+fn read(path: &Path, missing_is_empty: bool) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && missing_is_empty => {
+            Ok(String::new())
+        }
+        Err(error) => Err(error).context("cannot read startup environment configuration"),
+    }
 }
 
 fn resolve(
     contents: &str,
-    mut inherited: BTreeMap<OsString, OsString>,
-) -> anyhow::Result<BTreeMap<OsString, OsString>> {
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) -> anyhow::Result<Resolved> {
     // Do not include parser diagnostics: the source line can contain proxy credentials.
-    // Unparseable TOML cannot safely be assumed to contain no configured proxy.
+    // Unparseable TOML cannot safely be assumed to contain no proxy configuration.
     let config: StartupConfig = toml::from_str(contents).map_err(|_| {
         anyhow::anyhow!("Error loading config.toml: invalid startup [env] configuration")
     })?;
+    let inherited: BTreeMap<OsString, OsString> = inherited.into_iter().collect();
+    let mut resolved = Resolved {
+        direct: config.proxy.direct,
+        ..Resolved::default()
+    };
     for (key, value) in config.env {
         anyhow::ensure!(
             !key.is_empty() && !key.contains(['=', '\0']) && !value.contains('\0'),
             "invalid startup environment entry"
         );
-        // Either spelling in the inherited environment takes precedence over config.
-        let proxy_key = matches!(
-            key.to_ascii_uppercase().as_str(),
-            "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY"
-        );
-        if proxy_key
-            && (inherited.contains_key(&OsString::from(key.to_ascii_lowercase()))
-                || inherited.contains_key(&OsString::from(key.to_ascii_uppercase())))
-        {
-            continue;
-        }
-        inherited.entry(key.into()).or_insert_with(|| value.into());
-    }
-    let mut proxies = BTreeMap::new();
-    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
-        let lower = key.to_ascii_lowercase();
-        let value = inherited
-            .get(&OsString::from(key))
-            .or_else(|| inherited.get(&OsString::from(&lower)));
-        let Some(value) = value else { continue };
-        let value = value
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("invalid {key} encoding"))?;
-        if value.trim().is_empty() {
-            // Empty uppercase values still mask lowercase ones, especially NO_PROXY="*".
-            inherited.insert(key.into(), OsString::new());
-            inherited.insert(lower.into(), OsString::new());
-            continue;
-        }
-        let value = if key == "NO_PROXY" {
-            value.to_string()
-        } else {
-            let value = if value.contains("://") {
-                value.trim().to_string()
-            } else {
-                format!("http://{}", value.trim())
-            };
-            let url = url::Url::parse(&value).map_err(|_| anyhow::anyhow!("invalid {key} URL"))?;
-            anyhow::ensure!(
-                matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h")
-                    && url.host_str().is_some()
-                    && matches!(url.path(), "" | "/")
-                    && url.query().is_none()
-                    && url.fragment().is_none(),
-                "unsupported {key} URL"
-            );
-            // Canonical ASCII URLs also keep legacy URI-based clients from silently ignoring
-            // otherwise valid proxy credentials containing non-ASCII characters.
-            url.as_str().trim_end_matches('/').to_string()
-        };
-        proxies.insert(key, value);
-    }
-    // A single configured proxy covers both HTTP and HTTPS, including legacy clients.
-    for (key, alternate) in [("HTTP_PROXY", "HTTPS_PROXY"), ("HTTPS_PROXY", "HTTP_PROXY")] {
-        if !proxies.contains_key(key)
-            && let Some(value) = proxies
-                .get("ALL_PROXY")
-                .or_else(|| proxies.get(alternate))
-                .cloned()
-        {
-            proxies.insert(key, value);
+        if is_proxy_key(&key) {
+            resolved.env_proxy_keys.push(key);
+        } else if !inherited.contains_key(&OsString::from(&key)) {
+            // Inherited variables take precedence over config.
+            resolved.set.push((key.into(), value.into()));
         }
     }
-    for (key, value) in proxies {
-        inherited.insert(key.into(), value.clone().into());
-        inherited.insert(key.to_ascii_lowercase().into(), value.into());
-    }
-    Ok(inherited)
+    resolved.remove = inherited
+        .into_iter()
+        .filter(|(key, value)| {
+            key.to_str().is_some_and(is_proxy_key)
+                && value
+                    .to_str()
+                    .is_some_and(codex_required_proxy::carries_credentials)
+        })
+        .map(|(key, _)| key)
+        .collect();
+    Ok(resolved)
 }
 
 #[cfg(test)]

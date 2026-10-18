@@ -4,7 +4,8 @@ This branch keeps its product changes narrow and uses the upstream release pipel
 possible. The current fork-specific behavior is:
 
 - the MCP Apps browser bridge, including reconnect recovery;
-- required proxy routing for HTTP, Responses and Realtime WebSocket clients;
+- a required upstream proxy stored in the OS credential store, with a kill switch, for HTTP,
+  Responses and Realtime WebSocket clients;
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
@@ -17,15 +18,60 @@ network-policy and credential-broker changes.
 The lineage starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
 loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
 
-## Proxy-aware launcher
+## Required upstream proxy
 
-The CLI loads the top-level `[env]` table in the user config before starting its runtime,
-including when the binary is launched directly. Inherited variables take precedence. Proxy
-variables accept uppercase or lowercase names; uppercase wins when both are inherited. Both
-spellings are synchronized before clients start. Invalid configuration stops startup without
-printing proxy credentials. TOML strings and comments are parsed by the TOML parser.
-An unreadable explicitly selected `CODEX_FORK_CONFIG` or malformed TOML stops every CLI
-subcommand, including `exec-server`: ignoring it could silently discard the configured proxy.
+Codex's own traffic uses one upstream proxy whose full URL, credentials included, lives in the OS
+credential store (the macOS Keychain item `Codex Fork Proxy`, one account per canonical
+`CODEX_HOME`). The URL is held only in process memory: it never enters the process environment,
+`config.toml`, shell snapshots, rollouts, logs or feedback reports, so agent commands cannot read
+it. Codex creates the Keychain item itself, so other programs (including `security`) need
+explicit approval to read it. Development builds signed differently ask for that approval once.
+
+```shell
+codex proxy import   # move HTTP(S)_PROXY/ALL_PROXY/NO_PROXY from [env] into the Keychain
+codex proxy set      # store a URL read from stdin (hidden on a terminal)
+codex proxy status   # show the proxy without credentials and its direct destinations
+codex proxy clear
+```
+
+`set`, `clear` and `import` refuse to run inside a Codex agent session (`CODEX_THREAD_ID` or
+`CODEX_SESSION_ID` present), so an agent cannot redirect or remove the proxy through them.
+
+Destinations that bypass the proxy are configured without secrets:
+
+```toml
+[proxy]
+direct = ["192.168.0.0/16", "100.64.0.0/10", "fd7a:115c:a1e0::/48", ".ts.net"]
+```
+
+Loopback (`localhost`, `127.0.0.1`, `::1`) is always direct. Entries may be domains (matching
+subdomains), IP addresses or CIDR ranges; addresses must be loopback, private, CGNAT or
+link-local. OpenAI destinations (`openai.com`, `openai.org`, `chatgpt.com`,
+`chatgpt-staging.com`, `oaistatic.com`, `oaiusercontent.com`, `sentry.io`) and `*` are
+rejected and never bypass the proxy.
+
+**Kill switch.** Release builds refuse to start any network-capable subcommand when no proxy is
+stored or the credential store cannot be read. `codex proxy`, `completion`, `stdio-to-uds` and
+`--version` still run. `CODEX_FORK_DANGEROUSLY_ALLOW_DIRECT=1` is the only override. Debug builds
+use a stored proxy the same way but start without one, so tests with temporary Codex homes run
+unchanged; `CODEX_FORK_REQUIRE_PROXY=1` gives them release behavior. Proxy variables in `[env]`
+stop startup with a pointer to `codex proxy import`, and inherited `*PROXY*` variables that carry
+credentials are removed before any child process starts.
+
+**Live changes.** Running processes, including the app-server daemon, reload the proxy and
+`[proxy] direct` within about two seconds after `codex proxy set|clear|import` (which touch
+`$CODEX_HOME/.codex-fork-proxy-revision`) or an edit of `config.toml`. Existing HTTP clients ask
+for the current proxy per request, so no daemon restart is needed. A failed reload, including a
+cleared credential, keeps the previous proxy; a running process never falls back to direct.
+
+The required proxy replaces environment and system proxy discovery for every route, including
+legacy transport-default clients and the WebSocket dialer. Connection, authentication and TLS
+failures do not retry a direct route; destinations that cannot be configured are sent to an
+unusable proxy instead. OTLP/HTTP exporters use the required proxy, OTLP/gRPC refuses to
+initialize because Tonic cannot honor it, and WebRTC voice is refused because its media uses UDP.
+`/feedback` diagnostics redact credentials in any reported proxy variable. This is application
+routing, not a system firewall: in `danger-full-access`, programs started by the agent can
+still open direct connections.
 
 [`scripts/run-codex-fork.sh`](scripts/run-codex-fork.sh) provides a Codex-only launch boundary. It:
 
@@ -33,54 +79,16 @@ subcommand, including `exec-server`: ignoring it could silently discard the conf
 2. executes `bin/codex` in a release package or `codex-rs/target/release/codex` in a source
    checkout. Environment loading and validation belong to the binary.
 
-For example:
+The CLI still loads other `[env]` entries before starting its runtime; inherited variables take
+precedence. An unreadable explicitly selected `CODEX_FORK_CONFIG` or malformed TOML stops every
+CLI subcommand without printing its contents. Use `CODEX_FORK_CONFIG` to select another file for
+startup loading and `[proxy] direct`, and `CODEX_FORK_BINARY` to select another binary in the
+launcher. Neither is a config.toml key.
 
-```toml
-[env]
-HTTPS_PROXY = "https://user:password@proxy.example:443"
-HTTP_PROXY = "https://user:password@proxy.example:443"
-NO_PROXY = "localhost,127.0.0.1,::1,192.168.0.50"
-```
-
-The `NO_PROXY` entry keeps loopback MCP servers and other local development endpoints direct while
-external Codex and `codex_apps` traffic continues through the configured proxy. Add the exact host
-or IP address of each LAN MCP server because loopback entries do not cover private-network peers.
-
-Run the tracked launcher directly:
-
-```shell
-./scripts/run-codex-fork.sh
-```
-
-To make it the global command while keeping the launcher in version control:
-
-```shell
-ln -s /absolute/path/to/codex/scripts/run-codex-fork.sh ~/.cargo/bin/codex
-```
-
-Use `CODEX_FORK_CONFIG` to select another file for startup environment loading and
-`CODEX_FORK_BINARY` to select another binary in the launcher. Neither is a config.toml key.
-
-Explicit environment proxies take precedence over system routing, including a system `DIRECT`
-decision, even when the upstream `respect_system_proxy` feature is disabled. That feature still
-controls system/PAC discovery when no environment proxy is set. If only one HTTP(S) proxy is
-configured, it covers both schemes; `ALL_PROXY` is the
-fallback for a missing scheme-specific entry. Connection failures, authentication failures,
-TLS errors and unavailable system proxy discovery fail without retrying a direct route.
-Switching from Responses WebSocket to HTTP still uses the configured proxy. Explicit
-`NO_PROXY` destinations and dedicated loopback IPC remain direct. This is application routing,
-not a system firewall: browsers and independently launched programs own their network policy.
-
-OTLP/gRPC telemetry refuses to initialize when an environment proxy is configured, because
-its Tonic transport cannot honor that proxy. Use OTLP/HTTP for logs, traces and metrics instead;
-this conservative gRPC restriction also applies to destinations listed in `NO_PROXY`.
-
-The managed command proxy also refuses direct fallback when its enabled HTTP(S) upstream is
-invalid or unavailable. Its loopback/local bypass, private-IP routing opt-in, and explicit
-`allow_upstream_proxy` policy remain unchanged. Unsupported upstream schemes fail closed.
-
-Realtime uses the same connector and session HTTP factory as Responses, including TLS-to-proxy
-and custom certificate authorities. This restores the functionality from `b66720601b`.
+Without a required proxy (debug builds or the override), explicit environment proxies take
+precedence over system routing as before, and the managed command proxy refuses direct fallback
+when its enabled HTTP(S) upstream is invalid or unavailable. Realtime uses the same connector and
+session HTTP factory as Responses, including TLS-to-proxy and custom certificate authorities.
 
 ## Native TUI settings control (Unix)
 

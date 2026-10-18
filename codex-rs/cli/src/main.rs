@@ -72,12 +72,14 @@ mod mcp_cmd;
 mod mcp_login;
 mod migrate_rollouts;
 mod plugin_cmd;
+mod proxy_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod sandbox_uninstall;
 mod startup_env;
+mod startup_proxy;
 mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
@@ -164,6 +166,9 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Manage the required upstream proxy stored in the system credential store.
+    Proxy(proxy_cmd::ProxyCommand),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -1031,12 +1036,12 @@ fn stage_str(stage: Stage) -> &'static str {
 
 fn main() -> anyhow::Result<()> {
     // SAFETY: no runtime or application threads exist before startup initialization.
-    unsafe { startup_env::apply()? };
+    let startup_proxy = unsafe { startup_env::apply()? };
     codex_build_info::initialize!();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         // Keep the CLI dispatcher off the runtime's stack while the TUI rebuilds a thread.
-        Box::pin(cli_main(arg0_paths, remote_control_disabled)).await?;
+        Box::pin(cli_main(arg0_paths, remote_control_disabled, startup_proxy)).await?;
         Ok(())
     })
 }
@@ -1044,6 +1049,7 @@ fn main() -> anyhow::Result<()> {
 async fn cli_main(
     arg0_paths: Arg0DispatchPaths,
     remote_control_disabled: bool,
+    startup_proxy: startup_env::StartupProxyConfig,
 ) -> anyhow::Result<()> {
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
@@ -1052,6 +1058,13 @@ async fn cli_main(
         mut interactive,
         subcommand,
     } = MultitoolCli::parse();
+    // Fork kill switch: no network client may start before the required proxy is installed.
+    if !matches!(
+        subcommand,
+        Some(Subcommand::Proxy(_) | Subcommand::Completion(_) | Subcommand::StdioToUds(_))
+    ) {
+        startup_proxy::install(&startup_proxy)?;
+    }
     // Retain the launch target through TUI exit, even if a launcher changes selection.
     let daemon_cli_executable = arg0_paths
         .codex_self_exe
@@ -1635,6 +1648,14 @@ async fn cli_main(
                 "completion",
             )?;
             print_completion(completion_cli);
+        }
+        Some(Subcommand::Proxy(proxy_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "proxy",
+            )?;
+            proxy_cmd::run(proxy_cli, &startup_proxy)?;
         }
         Some(Subcommand::Update) => {
             reject_remote_mode_for_subcommand(
@@ -2280,6 +2301,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::App(_)) => Some("app"),
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
+        Some(Subcommand::Proxy(_)) => Some("proxy"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),

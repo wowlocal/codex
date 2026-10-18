@@ -44,6 +44,7 @@ pub(crate) fn ensure_grpc_proxy_compatible() -> Result<(), Box<dyn Error>> {
     ]
     .into_iter()
     .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()))
+        || codex_required_proxy::is_active()
     {
         return Err(config_error(
             "OTLP/gRPC cannot honor the configured proxy; use OTLP/HTTP instead of a direct connection",
@@ -125,6 +126,10 @@ fn build_http_client_inner(
 ) -> Result<reqwest::blocking::Client, Box<dyn Error>> {
     let mut builder =
         reqwest::blocking::Client::builder().timeout(resolve_otlp_timeout(timeout_var));
+    // reqwest discovers proxies from the environment, which never holds the required proxy.
+    if codex_required_proxy::is_active() {
+        builder = builder.proxy(codex_http_client::required_reqwest_proxy());
+    }
 
     if let Some(path) = tls.ca_certificate.as_ref() {
         let (pem, location) = read_bytes(path)?;

@@ -156,8 +156,14 @@ impl OutboundProxyRoute {
         else {
             return false;
         };
-        RequestOrigin::parse(&proxy_resolution_url(request_url))
-            .is_some_and(|origin| no_proxy_matches_origin(no_proxy, &origin))
+        let Some(origin) = RequestOrigin::parse(&proxy_resolution_url(request_url)) else {
+            return false;
+        };
+        match codex_required_proxy::current() {
+            // One matcher selects direct destinations for every transport.
+            Some(required) => required.bypasses_host(&origin.host),
+            None => no_proxy_matches_origin(no_proxy, &origin),
+        }
     }
 }
 
@@ -599,13 +605,36 @@ pub(crate) fn configure_builder_for_resolved_route(
         OutboundProxyRoute::Unavailable => {
             Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class })
         }
+        OutboundProxyRoute::TransportDefault if codex_required_proxy::is_active() => {
+            Ok(builder.proxy(required_reqwest_proxy()))
+        }
         OutboundProxyRoute::TransportDefault => Ok(builder),
         OutboundProxyRoute::Direct => Ok(builder.no_proxy()),
+        // Clients outlive proxy reloads, so they ask for the current required proxy per request.
+        OutboundProxyRoute::Proxy { .. } if codex_required_proxy::is_active() => {
+            Ok(builder.proxy(required_reqwest_proxy()))
+        }
         OutboundProxyRoute::Proxy { url, no_proxy } => {
             let no_proxy = no_proxy.as_deref().and_then(reqwest::NoProxy::from_string);
             configure_concrete_proxy(builder, route_class, url, no_proxy)
         }
     }
+}
+
+/// Every proxied destination fails when no required proxy can be selected.
+const REFUSE_ALL_PROXY_URL: &str = "http://127.0.0.1:0";
+
+/// A reqwest proxy that follows the current required proxy, including reloads.
+///
+/// Configured direct destinations connect directly; anything else that cannot use the required
+/// proxy is sent to an unusable proxy instead of a direct route.
+pub fn required_reqwest_proxy() -> reqwest::Proxy {
+    reqwest::Proxy::custom(|destination| {
+        let Some(required) = codex_required_proxy::current() else {
+            return Some(REFUSE_ALL_PROXY_URL.to_string());
+        };
+        required.proxy_for(destination).map(str::to_string)
+    })
 }
 
 fn configure_concrete_proxy(
@@ -1001,6 +1030,17 @@ struct ProcessEnv;
 
 impl EnvSource for ProcessEnv {
     fn var(&self, key: &str) -> Option<String> {
+        // The required proxy replaces environment proxy settings, so inherited or
+        // agent-provided variables can neither redirect nor exempt Codex traffic.
+        if let Some(required) = codex_required_proxy::current() {
+            match key.to_ascii_uppercase().as_str() {
+                "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" => {
+                    return Some(required.url().to_string());
+                }
+                "NO_PROXY" => return Some(required.no_proxy().to_string()),
+                _ => {}
+            }
+        }
         std::env::var(key).ok()
     }
 }

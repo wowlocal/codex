@@ -54,6 +54,7 @@ codex-features = { workspace = true }
 codex-git-attribution = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-install-context = { workspace = true }
+codex-keyring-store = { workspace = true }
 codex-login = { workspace = true }
 codex-memories-write = { workspace = true }
 codex-mcp = { workspace = true }
@@ -61,6 +62,7 @@ codex-model-provider = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
+codex-required-proxy = { workspace = true }
 codex-responses-api-proxy = { workspace = true }
 codex-tcp-tunnel = { workspace = true }
 codex-rmcp-client = { workspace = true }
@@ -100,6 +102,7 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
