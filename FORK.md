@@ -5,7 +5,8 @@ possible. The current fork-specific behavior is:
 
 - the MCP Apps browser bridge, including reconnect recovery;
 - a required upstream proxy stored in the OS credential store, with a kill switch, for HTTP,
-  Responses and Realtime WebSocket clients;
+  Responses and Realtime WebSocket clients, and a loopback command proxy for agent commands
+  and MCP servers;
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
@@ -63,6 +64,36 @@ credentials are removed before any child process starts.
 `$CODEX_HOME/.codex-fork-proxy-revision`) or an edit of `config.toml`. Existing HTTP clients ask
 for the current proxy per request, so no daemon restart is needed. A failed reload, including a
 cleared credential, keeps the previous proxy; a running process never falls back to direct.
+
+**Agent commands and MCP servers.** Programs started by Codex never receive the upstream proxy.
+Each Codex process with a required proxy serves a loopback command proxy
+(`codex-command-proxy`), and agent commands (`create_env`) and MCP stdio servers receive
+`HTTP(S)_PROXY`/`ALL_PROXY` pointing at it, `NO_PROXY` for loopback and
+`NODE_USE_ENV_PROXY=1`. The proxy username identifies the caller: `thread-<id>` for an agent
+thread's commands and `codex` for everything else. Per connection, OpenAI destinations always
+use the upstream proxy, loopback and `[proxy] direct` connect directly, package registries
+(npm, Yarn, PyPI, crates.io, Go, Homebrew, ghcr.io, RubyGems, Maven Central) connect directly
+for agent threads, and everything else uses the upstream proxy unless the calling thread
+changed its own routing:
+
+```shell
+codex proxy route status
+codex proxy route packages          # restore direct package registries
+codex proxy route add example.com
+codex proxy route remove example.com
+codex proxy route default direct    # or proxy
+```
+
+These requests go to `http://codex-proxy.invalid/routing` through the caller's command proxy,
+affect only that thread's commands until the process restarts, and are refused for OpenAI
+destinations and for callers without a thread identity, so MCP servers and Codex's own traffic
+keep their routing. Failures answer `502` with `X-Codex-Proxy: upstream-failed` or
+`direct-failed`. Inherited proxy URLs with a username but no password on loopback are command
+proxy identities, not credentials, and are kept. `codex proxy set|import` also install the
+`codex-proxy-routing` skill into `$CODEX_HOME/skills`, which tells agents how to diagnose and
+adjust their routing and never to bypass the proxy. Hooks keep Codex's environment and receive
+no proxy. Under a sandboxed permission profile without network access, commands cannot reach
+the loopback proxy either.
 
 The required proxy replaces environment and system proxy discovery for every route, including
 legacy transport-default clients and the WebSocket dialer. Connection, authentication and TLS
@@ -165,6 +196,25 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Required proxy validation (2026-10-18, macOS Apple Silicon)
+
+- Crates touched by the credential-store proxy (required-proxy, HTTP client, OTel, feedback,
+  WebRTC, config, CLI): 1,185 tests ran; the one failure was an upstream CLI queue test that
+  read the developer's own `CODEX_HOME`. It now uses a temporary home; 8 of 8 passed on recheck.
+- Crates touched by the command proxy (command-proxy, required-proxy, protocol, rmcp-client,
+  CLI): 1,285 tests ran and passed, 10 skipped.
+- A Keychain item created by `codex proxy set` lists only the creating `codex` binary for
+  decryption (`cdhash` for ad-hoc builds); `security` is not trusted.
+- End to end with a debug build, a temporary `CODEX_HOME` and a fake upstream proxy: child
+  commands received only the credential-free command proxy; plain HTTP and CONNECT reached the
+  upstream with `Proxy-Authorization`; an upstream refusal surfaced as `502` with
+  `X-Codex-Proxy: upstream-failed`; `codex proxy route add` sent a host direct without touching
+  the upstream; `route default direct` still sent `api.openai.com` upstream; `route add
+  chatgpt.com` and `codex proxy set` inside an agent session were refused.
+
+The full workspace suite, the TUI suite, native Linux/Windows checks and a live TUI session
+with a real upstream proxy were not run.
 
 ## Port validation (2026-10-18, macOS Apple Silicon)
 

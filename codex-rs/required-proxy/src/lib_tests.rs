@@ -128,6 +128,8 @@ fn url_credentials_are_redacted() {
         "http://127.0.0.1:3128"
     );
     assert!(carries_credentials("https://user@proxy.example"));
+    assert!(carries_credentials("http://user:secret@127.0.0.1:3128"));
+    assert!(!carries_credentials("http://thread-1@127.0.0.1:3128"));
     assert!(!carries_credentials("localhost,127.0.0.1"));
 }
 

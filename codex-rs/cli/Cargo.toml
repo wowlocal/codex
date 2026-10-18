@@ -23,6 +23,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -39,6 +40,7 @@ codex-aws-auth = { workspace = true }
 codex-chatgpt = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-cloud-tasks = { path = "../cloud-tasks" }
+codex-command-proxy = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }

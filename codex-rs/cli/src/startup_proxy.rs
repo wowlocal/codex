@@ -137,6 +137,15 @@ pub(crate) fn install(startup: &StartupProxyConfig) -> anyhow::Result<()> {
         reload(&store, &config_path)
     });
     codex_required_proxy::install(proxy, Some(reloader))?;
+
+    // Programs started by Codex reach the network through a loopback proxy without credentials.
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    listener.set_nonblocking(true)?;
+    let address = codex_command_proxy::spawn(
+        tokio::net::TcpListener::from_std(listener)?,
+        codex_required_proxy::current,
+    )?;
+    codex_required_proxy::set_command_proxy(address)?;
     Ok(())
 }
 

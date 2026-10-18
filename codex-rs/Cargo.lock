@@ -2510,6 +2510,7 @@ dependencies = [
  "app_test_support",
  "assert_cmd",
  "assert_matches",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2525,6 +2526,7 @@ dependencies = [
  "codex-chatgpt",
  "codex-cloud-config",
  "codex-cloud-tasks",
+ "codex-command-proxy",
  "codex-config",
  "codex-core",
  "codex-core-plugins",
@@ -2820,6 +2822,24 @@ dependencies = [
 [[package]]
 name = "codex-collaboration-mode-templates"
 version = "0.163.0-fork.1"
+
+[[package]]
+name = "codex-command-proxy"
+version = "0.163.0-fork.1"
+dependencies = [
+ "base64 0.22.1",
+ "codex-http-client",
+ "codex-required-proxy",
+ "pretty_assertions",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "urlencoding",
+]
 
 [[package]]
 name = "codex-config"
@@ -4326,6 +4346,7 @@ dependencies = [
  "codex-extension-items",
  "codex-http-client",
  "codex-network-proxy",
+ "codex-required-proxy",
  "codex-utils-absolute-path",
  "codex-utils-image",
  "codex-utils-path-uri",
@@ -4455,6 +4476,7 @@ dependencies = [
  "codex-network-proxy",
  "codex-otel",
  "codex-protocol",
+ "codex-required-proxy",
  "codex-secrets",
  "codex-utils-cargo-bin",
  "codex-utils-home-dir",
