@@ -753,6 +753,7 @@ fn child_env(params: &ExecParams) -> HashMap<String, String> {
     env.remove(crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR);
     env.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
     apply_exec_metadata(&mut env, params.metadata.as_ref());
+    shell_environment::apply_command_proxy_env(&mut env);
     env
 }
 

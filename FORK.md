@@ -10,7 +10,7 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.163.0`; the fork version is `0.163.0-fork.1`.
+The current base is upstream `rust-v0.163.0`; the fork version is `0.163.0-fork.2`.
 The 2026-10-18 port rebases the previous `0.160.0-fork.1` release (`9a23812a94`)
 onto that release. All twenty fork commits replayed; upstream did not absorb any
 fork feature in this range, so MCP Apps, required proxy routing, startup environment
@@ -178,7 +178,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.163.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.163.0-fork.2`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -215,6 +215,16 @@ memory allocation of a single compiler or linker process.
 
 The full workspace suite, the TUI suite, native Linux/Windows checks and a live TUI session
 with a real upstream proxy were not run.
+
+`0.163.0-fork.2` fixes agent command identity: unified exec and the exec-server set
+`CODEX_THREAD_ID` after building the environment, so commands received the `codex` identity
+and `codex proxy route` refused them. The proxy environment is now applied from the final
+`CODEX_THREAD_ID` wherever it is set. A live `codex exec` against the real upstream proxy
+found the bug: the model request used the Keychain proxy and the agent named the
+`codex-proxy-routing` skill, but its commands carried `http://codex@…`. Rechecks: the protocol
+suite, 185 unified-exec core tests and the update-dialog TUI tests passed. In `codex-exec-server`,
+29 of 56 `remote::*`/websocket tests fail when run together on this Mac both with and without
+the fix (each passes alone), so they are an existing environment-dependent failure.
 
 ## Port validation (2026-10-18, macOS Apple Silicon)
 

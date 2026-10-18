@@ -66,6 +66,16 @@ pub fn scrub_non_inheritable_env_vars(command: &mut std::process::Command) {
 
 /// Construct a shell environment from the supplied process environment and
 /// shell-environment policy.
+/// Fork: sends a command's network through Codex's loopback proxy, tagged with the thread in
+/// `CODEX_THREAD_ID`. Call again whenever the thread variable is set after the environment
+/// was built.
+pub fn apply_command_proxy_env(env: &mut HashMap<String, String>) {
+    let thread_id = env.get(CODEX_THREAD_ID_ENV_VAR).cloned();
+    for (key, value) in codex_required_proxy::command_proxy_env(thread_id.as_deref()) {
+        env.insert(key, value);
+    }
+}
+
 pub fn create_env(
     policy: &ShellEnvironmentPolicy,
     thread_id: Option<&str>,
@@ -167,10 +177,7 @@ where
         env_map.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     }
 
-    // Fork: send the command's network through Codex's loopback proxy, tagged with its thread.
-    for (key, value) in codex_required_proxy::command_proxy_env(thread_id) {
-        env_map.insert(key, value);
-    }
+    apply_command_proxy_env(&mut env_map);
 
     // Restricted launch context cannot be restored through user-provided shell
     // environment overrides.
