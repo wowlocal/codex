@@ -11,10 +11,14 @@ fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
     // Uninstall must work independently of configuration parsing and authentication.
     std::fs::write(home.path().join("config.toml"), "invalid config [")?;
     std::fs::write(home.path().join("auth.json"), "preserve credentials")?;
+    // The fork validates startup [env] before every subcommand; keep that input valid.
+    let startup_config = home.path().join("startup.toml");
+    std::fs::write(&startup_config, "")?;
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     command
         .env("CODEX_HOME", home.path())
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["sandbox", "uninstall", "--help"])
         .assert()
         .success();
@@ -22,6 +26,7 @@ fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     command
         .env("CODEX_HOME", home.path())
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["sandbox", "uninstall", "unexpected"])
         .assert()
         .failure()

@@ -170,9 +170,10 @@ pub(super) async fn compatibility_warning(
     };
     let mut restart_features = None;
     let check = async {
-        let client = app_server_connection::connect(target, crate::mcp_apps_client_extensions(config))
-            .await
-            .map_err(|_| "could not connect to check daemon feature settings".to_string())?;
+        let client =
+            app_server_connection::connect(target, crate::mcp_apps_client_extensions(config))
+                .await
+                .map_err(|_| "could not connect to check daemon feature settings".to_string())?;
         // File settings and defaults belong to the daemon until it restarts.
         // Only explicit invocation flags can request a shared-service restart.
         let mut requested = server_features(cli_kv_overrides);

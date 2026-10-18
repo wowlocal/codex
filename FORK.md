@@ -8,13 +8,13 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.160.0`; the fork version is `0.160.0-fork.1`.
-The 2026-10-03 port rebases the previous `0.156.1-fork.1` release (`77502086f2`)
-onto that release. Nineteen fork commits remain; upstream now implements the
-shared Realtime connector, replacing the former standalone routing commit.
-MCP Apps, required proxy routing, startup environment loading, and BUSY native
-TUI controls are preserved alongside upstream network-policy enforcement.
-The port starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
+The current base is upstream `rust-v0.163.0`; the fork version is `0.163.0-fork.1`.
+The 2026-10-18 port rebases the previous `0.160.0-fork.1` release (`9a23812a94`)
+onto that release. All twenty fork commits replayed; upstream did not absorb any
+fork feature in this range, so MCP Apps, required proxy routing, startup environment
+loading, and BUSY native TUI controls are carried unchanged alongside upstream
+network-policy and credential-broker changes.
+The lineage starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
 loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
 
 ## Proxy-aware launcher
@@ -139,7 +139,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.160.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.163.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -157,6 +157,39 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Port validation (2026-10-18, macOS Apple Silicon)
+
+- Rebased all twenty fork commits from `rust-v0.160.0` onto stable upstream
+  `rust-v0.163.0`. Conflicts were additive: upstream's new `turn/start` cyber
+  access argument sits beside the MCP Apps additional context, the embedded
+  app-server start keeps upstream's boxed future with MCP Apps client extensions,
+  and the native TUI control select arms sit beside upstream's daemon restart arm.
+- Upstream removed the daemon code-mode fallback check; the daemon feature probe
+  keeps only the fork's MCP Apps client extensions. New remote connections for
+  session archive commands and retained-reply tests pass empty client extensions.
+- Upstream's new `codex sandbox uninstall` test expects malformed `config.toml` to
+  be ignored. The fork still refuses malformed startup configuration for every
+  subcommand, so the test supplies a valid explicit `CODEX_FORK_CONFIG`, matching
+  the doctor tests. Production proxy handling was not relaxed.
+- Upstream's broadened bootstrap retry uses `RespectSystemProxy`, which still
+  yields to an explicit environment proxy; no direct fallback was introduced.
+- Affected non-TUI crates (CLI, network-proxy, API, HTTP, WebSocket, OTel, MCP,
+  config, app-server-client): 1,973 tests ran, 1,972 passed, 2 skipped. The one
+  failure was the uninstall test above; it and the startup environment tests
+  passed on recheck (5 of 5).
+- `codex-tui`: 5,806 tests ran, 5,802 passed, 8 skipped. Two update-dialog
+  snapshots changed only by the fork version and were accepted; all seven
+  update-dialog tests passed on recheck. Three native-control composer snapshots
+  differed only by upstream's new `⇧tab` Plan-mode hint (formerly `shift+tab`);
+  they were reviewed and accepted, and all four local-control tests passed on recheck.
+- Config schema regeneration and `just bazel-lock-update` produced no drift.
+  Scoped `just fix` for `codex-tui` and `codex-cli` reported no warnings; `just fmt`
+  reformatted one line.
+
+The full workspace suite, BUSY Codex client suites, a live native-control TUI
+roundtrip, and native Windows/Linux checks were not run. No release binary was
+built, signed, or installed.
 
 ## Port validation (2026-10-03, macOS Apple Silicon)
 

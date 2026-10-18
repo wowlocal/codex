@@ -58,7 +58,7 @@ async fn connection() -> color_eyre::Result<(
         }
         Ok(())
     });
-    let client = crate::connect_remote_app_server(endpoint).await?;
+    let client = crate::connect_remote_app_server(endpoint, Default::default()).await?;
     Ok((
         AppServerSession::new(client, ThreadParamsMode::Remote),
         receiver,
