@@ -54,6 +54,18 @@ fn command_env_replaces_inherited_proxies_with_the_thread_command_proxy() {
             ("NODE_USE_ENV_PROXY", "1"),
         ]
     );
+    // Shell tools that set the thread after building the environment re-apply the proxy.
+    let mut late = create_env_from_vars(Vec::new(), &policy, /*thread_id*/ None);
+    assert_eq!(
+        late.get("HTTP_PROXY").map(String::as_str),
+        Some("http://codex@127.0.0.1:4242")
+    );
+    late.insert("CODEX_THREAD_ID".to_string(), "t2".to_string());
+    codex_protocol::shell_environment::apply_command_proxy_env(&mut late);
+    assert_eq!(
+        late.get("HTTP_PROXY").map(String::as_str),
+        Some("http://thread-t2@127.0.0.1:4242")
+    );
     assert_eq!(
         codex_required_proxy::command_proxy_env(/*thread_id*/ None)[0],
         (

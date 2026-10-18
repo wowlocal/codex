@@ -198,6 +198,10 @@ for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
 
+The0.163.0-fork.2 thread identity fix is retained: unified exec and the exec-server
+reapply their command-proxy environment after setting the final `CODEX_THREAD_ID`.
+Agent routing commands use a `thread-<id>` identity, not the Codex client's identity.
+
 ## Required proxy validation (2026-10-18, macOS Apple Silicon)
 
 - Crates touched by the credential-store proxy (required-proxy, HTTP client, OTel, feedback,
