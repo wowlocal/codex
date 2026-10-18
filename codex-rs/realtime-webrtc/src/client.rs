@@ -171,6 +171,11 @@ impl VoiceHost {
     }
 
     pub async fn connect(package: &CodexPackageLayout, build_commit: &str) -> Result<Self> {
+        // WebRTC media uses UDP, which the required HTTP proxy cannot carry.
+        ensure!(
+            !codex_required_proxy::is_active(),
+            "WebRTC voice is unavailable while a required proxy is configured"
+        );
         let root = package.package_dir.as_path().canonicalize()?;
         let name = if cfg!(windows) {
             "codex-voice-host.exe"

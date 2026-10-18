@@ -174,7 +174,10 @@ async fn queue_does_not_fallback_from_unsupported_explicit_remote() -> Result<()
 
 #[test]
 fn queue_rejects_empty_message() -> Result<()> {
+    // Startup must not depend on the developer's own Codex home and proxy.
+    let codex_home = TempDir::new()?;
     let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        .env("CODEX_HOME", codex_home.path())
         .args(["queue", "--thread", THREAD_ID, "--message", ""])
         .output()?;
     assert!(!output.status.success());

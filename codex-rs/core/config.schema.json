@@ -4679,6 +4679,20 @@
       ],
       "type": "object"
     },
+    "RequiredProxyToml": {
+      "additionalProperties": false,
+      "description": "Routing for the required upstream proxy, whose URL lives in the OS credential store.",
+      "properties": {
+        "direct": {
+          "description": "Domains, private IP addresses and private CIDR ranges that bypass the proxy. OpenAI destinations always use it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ResumeCwdMode": {
       "description": "Working directory to use when resuming or forking a session.",
       "oneOf": [
@@ -7850,7 +7864,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Process environment loaded by the CLI before starting network clients.",
+      "description": "Process environment loaded by the CLI before startup. Proxy variables are rejected: `codex proxy import` moves them into the OS credential store.",
       "type": "object"
     },
     "experimental_compact_prompt_file": {
@@ -8936,6 +8950,14 @@
         "$ref": "#/definitions/ProjectConfig"
       },
       "type": "object"
+    },
+    "proxy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RequiredProxyToml"
+        }
+      ],
+      "description": "Routing for the required upstream proxy."
     },
     "realtime": {
       "allOf": [

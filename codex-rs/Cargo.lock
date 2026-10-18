@@ -2590,6 +2590,7 @@ dependencies = [
  "codex-home",
  "codex-http-client",
  "codex-install-context",
+ "codex-keyring-store",
  "codex-login",
  "codex-mcp",
  "codex-memories-write",
@@ -2598,6 +2599,7 @@ dependencies = [
  "codex-multi-env-copy-file",
  "codex-plugin",
  "codex-protocol",
+ "codex-required-proxy",
  "codex-responses-api-proxy",
  "codex-rmcp-client",
  "codex-rollout",
@@ -2646,6 +2648,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml 0.9.11+spec-1.1.0",
+ "toml_edit 0.24.0+spec-1.1.0",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -3591,6 +3594,7 @@ dependencies = [
  "codex-http-client",
  "codex-login",
  "codex-protocol",
+ "codex-required-proxy",
  "codex-rollout",
  "codex-state",
  "flate2",
@@ -3933,6 +3937,7 @@ name = "codex-http-client"
 version = "0.169.0-fork.1"
 dependencies = [
  "bytes",
+ "codex-required-proxy",
  "codex-utils-cargo-bin",
  "codex-utils-rustls-provider",
  "curl",
@@ -4568,6 +4573,7 @@ dependencies = [
  "codex-http-client",
  "codex-http-headers-helper",
  "codex-protocol",
+ "codex-required-proxy",
  "codex-utils-absolute-path",
  "codex-utils-process",
  "codex-utils-stream-parser",
@@ -4751,6 +4757,7 @@ dependencies = [
  "anyhow",
  "codex-build-info",
  "codex-install-context",
+ "codex-required-proxy",
  "codex-utils-cargo-bin",
  "codex-utils-pty",
  "ctor 0.6.3",
@@ -4761,6 +4768,17 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "codex-required-proxy"
+version = "0.163.0-fork.1"
+dependencies = [
+ "pretty_assertions",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
 ]
 
 [[package]]

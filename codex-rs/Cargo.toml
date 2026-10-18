@@ -102,6 +102,7 @@ members = [
     "ollama",
     "process-hardening",
     "realtime-webrtc",
+    "required-proxy",
     "voice-host",
     "protocol",
     "protocol/tests/support",
@@ -184,6 +185,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # Internal
 codex-realtime-webrtc = { path = "realtime-webrtc" }
+codex-required-proxy = { path = "required-proxy" }
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
