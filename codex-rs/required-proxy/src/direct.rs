@@ -43,13 +43,44 @@ pub fn is_pinned_host(host: &str) -> bool {
         .any(|pinned| host == *pinned || host.ends_with(&format!(".{pinned}")))
 }
 
-#[derive(Clone, PartialEq, Eq)]
+/// Destinations that connect directly. Pinned OpenAI hosts never match.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirectList {
+    entries: Vec<DirectEntry>,
+}
+
+impl DirectList {
+    /// Validates entries, dropping duplicates.
+    pub fn parse(entries: &[String]) -> Result<Self, RequiredProxyError> {
+        let mut list = Self::default();
+        for entry in entries {
+            let (entry, _) = DirectEntry::parse(entry)?;
+            if !list.entries.contains(&entry) {
+                list.entries.push(entry);
+            }
+        }
+        Ok(list)
+    }
+
+    /// Whether `host` (a domain or IP literal, brackets optional) connects directly.
+    pub fn matches(&self, host: &str) -> bool {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        !is_pinned_host(host) && self.entries.iter().any(|entry| entry.matches(host))
+    }
+
+    /// The entries in `NO_PROXY` spelling.
+    pub fn entries(&self) -> Vec<String> {
+        self.entries.iter().map(ToString::to_string).collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DirectEntry {
     text: String,
     kind: Kind,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
     /// Matches the domain and its subdomains.
     Domain(String),
@@ -60,13 +91,6 @@ enum Kind {
 }
 
 impl DirectEntry {
-    pub(crate) fn loopback() -> Vec<Self> {
-        IMPLICIT_DIRECT
-            .iter()
-            .filter_map(|entry| Self::parse(entry).ok().map(|(entry, _)| entry))
-            .collect()
-    }
-
     /// Parses a `[proxy] direct` entry and returns it with its `NO_PROXY` spelling.
     pub(crate) fn parse(entry: &str) -> Result<(Self, String), RequiredProxyError> {
         let invalid = |reason| RequiredProxyError::InvalidDirectEntry {

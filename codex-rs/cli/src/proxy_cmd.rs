@@ -11,6 +11,9 @@ use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 use codex_required_proxy::RequiredProxy;
 
+use crate::proxy_route_cmd;
+use crate::proxy_route_cmd::RouteCommand;
+use crate::proxy_skill;
 use crate::startup_env;
 use crate::startup_env::StartupProxyConfig;
 use crate::startup_proxy::Enforcement;
@@ -32,11 +35,14 @@ enum ProxyAction {
     Clear,
     /// Move proxy variables from `[env]` in config.toml into the system credential store.
     Import,
+    /// For agents: show or change how this thread's commands reach the network.
+    Route(RouteCommand),
 }
 
 pub(crate) fn run(command: ProxyCommand, startup: &StartupProxyConfig) -> anyhow::Result<()> {
     let store = ProxyStore::for_codex_home()?;
     match command.action {
+        ProxyAction::Route(route) => return proxy_route_cmd::run(route),
         ProxyAction::Set => {
             refuse_in_agent_session("set")?;
             let url = read_proxy_url()?;
@@ -47,6 +53,7 @@ pub(crate) fn run(command: ProxyCommand, startup: &StartupProxyConfig) -> anyhow
                 proxy.redacted(),
                 store.codex_home().display()
             );
+            install_skill(&store)?;
         }
         ProxyAction::Status => print_status(&store, startup),
         ProxyAction::Clear => {
@@ -67,8 +74,18 @@ pub(crate) fn run(command: ProxyCommand, startup: &StartupProxyConfig) -> anyhow
         ProxyAction::Import => {
             refuse_in_agent_session("import")?;
             import(&store, startup)?;
+            install_skill(&store)?;
         }
     }
+    Ok(())
+}
+
+fn install_skill(store: &ProxyStore) -> anyhow::Result<()> {
+    let path = proxy_skill::install(store.codex_home())?;
+    println!(
+        "Installed the proxy routing skill for agents: {}",
+        path.display()
+    );
     Ok(())
 }
 

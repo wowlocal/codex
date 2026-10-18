@@ -14,6 +14,7 @@ mod direct;
 
 use std::borrow::Cow;
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -24,13 +25,18 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use direct::DirectEntry;
-
+pub use direct::DirectList;
 pub use direct::IMPLICIT_DIRECT;
 pub use direct::PINNED_DOMAINS;
 pub use direct::is_pinned_host;
 
 static STATE: OnceLock<State> = OnceLock::new();
+static COMMAND_PROXY: OnceLock<SocketAddr> = OnceLock::new();
+
+/// Proxy username for programs started by Codex itself, such as MCP servers.
+pub const CODEX_IDENTITY: &str = "codex";
+/// Proxy username prefix for agent commands, followed by their thread ID.
+pub const THREAD_IDENTITY_PREFIX: &str = "thread-";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RequiredProxyError {
@@ -43,6 +49,8 @@ pub enum RequiredProxyError {
     InvalidDirectEntry { entry: String, reason: &'static str },
     #[error("the upstream proxy was already installed")]
     AlreadyInstalled,
+    #[error("the command proxy was already published")]
+    CommandProxyAlreadySet,
 }
 
 /// A validated upstream proxy and the destinations that bypass it.
@@ -53,26 +61,23 @@ pub enum RequiredProxyError {
 pub struct RequiredProxy {
     url: String,
     no_proxy: String,
-    direct: Vec<DirectEntry>,
+    direct: DirectList,
 }
 
 impl RequiredProxy {
     /// Validates the proxy URL and the configured direct destinations.
     pub fn new(url: &str, direct: &[String]) -> Result<Self, RequiredProxyError> {
         let url = normalize_proxy_url(url)?;
-        let mut entries = DirectEntry::loopback();
-        let mut no_proxy: Vec<String> = entries.iter().map(DirectEntry::to_string).collect();
-        for entry in direct {
-            let (parsed, normalized) = DirectEntry::parse(entry)?;
-            if !no_proxy.contains(&normalized) {
-                entries.push(parsed);
-                no_proxy.push(normalized);
-            }
-        }
+        let entries: Vec<String> = IMPLICIT_DIRECT
+            .iter()
+            .map(ToString::to_string)
+            .chain(direct.iter().cloned())
+            .collect();
+        let direct = DirectList::parse(&entries)?;
         Ok(Self {
             url,
-            no_proxy: no_proxy.join(","),
-            direct: entries,
+            no_proxy: direct.entries().join(","),
+            direct,
         })
     }
 
@@ -89,8 +94,7 @@ impl RequiredProxy {
     /// Whether `host` (a domain or IP literal, brackets optional) connects directly.
     /// Pinned OpenAI destinations never do.
     pub fn bypasses_host(&self, host: &str) -> bool {
-        let host = host.trim_start_matches('[').trim_end_matches(']');
-        !is_pinned_host(host) && self.direct.iter().any(|entry| entry.matches(host))
+        self.direct.matches(host)
     }
 
     /// The proxy URL for a destination, or `None` when it connects directly.
@@ -208,6 +212,45 @@ pub fn current() -> Option<Arc<RequiredProxy>> {
     ))
 }
 
+/// Publishes the loopback proxy that programs started by Codex use. Call once.
+pub fn set_command_proxy(address: SocketAddr) -> Result<(), RequiredProxyError> {
+    COMMAND_PROXY
+        .set(address)
+        .map_err(|_| RequiredProxyError::CommandProxyAlreadySet)
+}
+
+/// Proxy environment for a program started by Codex, or nothing without a command proxy.
+///
+/// Agent commands pass their thread ID so the agent can adjust that thread's routing; other
+/// programs, such as MCP servers, get Codex's fixed routing. The URLs carry no credentials.
+pub fn command_proxy_env(thread_id: Option<&str>) -> Vec<(String, String)> {
+    let Some(address) = COMMAND_PROXY.get() else {
+        return Vec::new();
+    };
+    let identity = match thread_id {
+        Some(thread_id) => format!("{THREAD_IDENTITY_PREFIX}{thread_id}"),
+        None => CODEX_IDENTITY.to_string(),
+    };
+    let url = format!("http://{identity}@{address}");
+    let no_proxy = IMPLICIT_DIRECT.join(",");
+    let mut env: Vec<(String, String)> = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    .into_iter()
+    .map(|key| (key.to_string(), url.clone()))
+    .collect();
+    env.push(("NO_PROXY".to_string(), no_proxy.clone()));
+    env.push(("no_proxy".to_string(), no_proxy));
+    // Node.js clients honor proxy variables only when this is set.
+    env.push(("NODE_USE_ENV_PROXY".to_string(), "1".to_string()));
+    env
+}
+
 /// Validates a proxy URL and returns its canonical form.
 pub fn normalize_proxy_url(value: &str) -> Result<String, RequiredProxyError> {
     let value = with_default_scheme(value.trim());
@@ -224,9 +267,16 @@ pub fn normalize_proxy_url(value: &str) -> Result<String, RequiredProxyError> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
-/// Whether a value is a URL that carries a username or password.
+/// Whether a value is a proxy URL whose userinfo may be a secret.
+///
+/// A username without a password on a loopback proxy, such as Codex's command proxy identity,
+/// is not treated as a credential.
 pub fn carries_credentials(value: &str) -> bool {
-    matches!(redact_url_credentials(value), Cow::Owned(_))
+    let Ok(url) = url::Url::parse(&with_default_scheme(value.trim())) else {
+        return false;
+    };
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    url.password().is_some() || (!url.username().is_empty() && !loopback)
 }
 
 /// Replaces URL credentials with `[REDACTED]`; other values are returned unchanged.

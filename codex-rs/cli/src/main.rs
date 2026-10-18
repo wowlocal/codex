@@ -72,6 +72,8 @@ mod migrate_nfs_db;
 mod migrate_rollouts;
 mod plugin_cmd;
 mod proxy_cmd;
+mod proxy_route_cmd;
+mod proxy_skill;
 mod queue_cmd;
 mod remote_control_cmd;
 #[cfg(target_os = "windows")]

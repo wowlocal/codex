@@ -167,6 +167,11 @@ where
         env_map.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     }
 
+    // Fork: send the command's network through Codex's loopback proxy, tagged with its thread.
+    for (key, value) in codex_required_proxy::command_proxy_env(thread_id) {
+        env_map.insert(key, value);
+    }
+
     // Restricted launch context cannot be restored through user-provided shell
     // environment overrides.
     env_map.retain(|name, _| !is_non_inheritable_env_var(name));

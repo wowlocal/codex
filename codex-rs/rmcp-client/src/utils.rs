@@ -36,6 +36,10 @@ pub(crate) fn create_env_for_mcp_server(
         env.retain(|key, _| !key.to_string_lossy().eq_ignore_ascii_case(name));
         env.insert(OsString::from(name), value);
     }
+    // Fork: MCP servers reach the network through Codex's loopback proxy, never directly.
+    for (name, value) in codex_required_proxy::command_proxy_env(/*thread_id*/ None) {
+        env.insert(OsString::from(name), OsString::from(value));
+    }
     for (name, value) in extra_env.unwrap_or_default() {
         if cfg!(windows)
             || name.to_str().is_some_and(|name| {
