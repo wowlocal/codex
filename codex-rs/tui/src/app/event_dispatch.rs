@@ -1541,11 +1541,13 @@ impl App {
                 self.submit_thread_op(app_server, thread_id, op).await?;
             }
             AppEvent::McpAppMessage {
+                backend_id,
                 thread_id,
                 text,
                 response_tx,
             } => {
-                let result = if self.current_displayed_thread_id() != Some(thread_id) {
+                let result = if backend_id != app_server.backend_id()
+                    || self.current_displayed_thread_id() != Some(thread_id) {
                     Err("Open the MCP App's thread in Codex before sending a message.".to_string())
                 } else if self
                     .chat_widget

@@ -31,6 +31,7 @@ impl ContextStore {
                 AdditionalContextEntry {
                     value,
                     kind: AdditionalContextKind::Untrusted,
+                    name: None,
                 },
             );
             self.order.push_back(key);

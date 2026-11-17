@@ -39,6 +39,7 @@ fn context_updates_replace_and_clear_one_view() {
                 value: "MCP App context from screens.select:\nRevenueChart, May–July\n\nStructured content:\n{\n  \"screen\": \"Dashboard\"\n}"
                     .to_string(),
                 kind: AdditionalContextKind::Untrusted,
+                    name: None,
             },
         )])
     );
@@ -69,6 +70,7 @@ fn context_updates_replace_and_clear_one_view() {
             AdditionalContextEntry {
                 value: "latest instance".to_string(),
                 kind: AdditionalContextKind::Untrusted,
+                name: None,
             },
         )])
     );
@@ -80,6 +82,7 @@ fn context_updates_replace_and_clear_one_view() {
             AdditionalContextEntry {
                 value: "latest instance".to_string(),
                 kind: AdditionalContextKind::Untrusted,
+                name: None,
             },
         )])
     );
@@ -275,5 +278,76 @@ fn browser_link_cell_snapshot() {
     assert_eq!(
         cell.display_hyperlink_lines(/*width*/ 80)[0].hyperlinks[0].destination,
         "http://127.0.0.1:43100/view/id/token"
+    );
+}
+
+#[test]
+fn completed_tool_views_prefer_captured_ui_and_keep_legacy_history_compatible() {
+    use super::view::ViewDescriptor;
+    use codex_app_server_protocol::ItemCompletedNotification;
+    use codex_app_server_protocol::ServerNotification;
+
+    for (ui, expected) in [
+        (serde_json::Value::Null, Some("ui://legacy")),
+        (
+            json!({"resourceUri": "ui://captured", "preferredModelDisplayMode": "inline"}),
+            Some("ui://captured"),
+        ),
+        (
+            json!({"resourceUri": "https://unsafe.example", "preferredModelDisplayMode": "inline"}),
+            None,
+        ),
+    ] {
+        let notification = ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn".to_string(),
+            item: serde_json::from_value(json!({
+                "type": "mcpToolCall", "id": "call", "server": "screens", "tool": "select",
+                "status": "completed", "arguments": {}, "result": {"content": []},
+                "mcpAppResourceUri": "ui://legacy", "mcpAppUi": ui,
+            }))
+            .expect("completed MCP tool item"),
+            content_token_count: None,
+            completed_at_ms: 1,
+        });
+        assert_eq!(
+            ViewDescriptor::from_notification(&notification).map(|view| view.resource_uri),
+            expected.map(str::to_string),
+        );
+    }
+}
+
+#[tokio::test]
+async fn browser_messages_remain_thread_scoped_after_voice_owner_is_parked() {
+    use crate::app_event::AppEvent;
+    use crate::app_event_sender::AppEventSender;
+    use codex_app_server_client::AppServerClient;
+    use codex_app_server_client::CloudClient;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
+
+    let backend_id = crate::backend_id::BackendId::new();
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let sender = AppEventSender::new(tx);
+    let (client, _commands, _notifications) = CloudClient::channel(/*capacity*/ 1);
+    let browser = super::McpAppsBrowser::start(
+        backend_id,
+        AppServerClient::Cloud(client).request_handle(),
+        sender.clone(),
+    )
+    .await
+    .expect("browser host");
+    sender.voice_only.store(true, Ordering::Relaxed);
+    let thread_id = ThreadId::new();
+    let (response_tx, _response) = oneshot::channel();
+    browser.state.app_event_tx.send(AppEvent::McpAppMessage {
+        backend_id,
+        thread_id,
+        text: "selected chart".to_string(),
+        response_tx,
+    });
+    assert!(
+        matches!(events.try_recv(), Ok(AppEvent::McpAppMessage { backend_id: owner, thread_id: id, text, .. }) if owner == backend_id && id == thread_id && text == "selected chart")
     );
 }

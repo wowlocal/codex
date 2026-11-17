@@ -73,7 +73,9 @@ async fn native_effort_waits_for_settings_event_and_preserves_plan_and_config() 
     );
     let updated = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
         loop {
-            if let Some(event @ AppServerEvent::ServerNotification(_)) = server.next_event().await {
+            if let Some(event @ AppServerEvent::ServerNotification(_)) =
+                server.next_event().await.map(|event| event.event)
+            {
                 control.observe(&event);
                 if let AppServerEvent::ServerNotification(notification) = event
                     && let ServerNotification::ThreadSettingsUpdated(updated) = *notification
@@ -153,7 +155,7 @@ async fn native_fast_roundtrip_preserves_effort_plan_and_config() -> Result<()> 
         let updated = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
             loop {
                 if let Some(event @ AppServerEvent::ServerNotification(_)) =
-                    server.next_event().await
+                    server.next_event().await.map(|event| event.event)
                 {
                     control.observe(&event);
                     if let AppServerEvent::ServerNotification(notification) = event
@@ -249,7 +251,9 @@ async fn native_model_waits_for_confirmation_and_preserves_plan_and_config() -> 
     );
     let updated = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
         loop {
-            if let Some(event @ AppServerEvent::ServerNotification(_)) = server.next_event().await {
+            if let Some(event @ AppServerEvent::ServerNotification(_)) =
+                server.next_event().await.map(|event| event.event)
+            {
                 control.observe(&event);
                 if let AppServerEvent::ServerNotification(notification) = event
                     && let ServerNotification::ThreadSettingsUpdated(updated) = *notification

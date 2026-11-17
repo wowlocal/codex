@@ -1,6 +1,6 @@
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_protocol::ThreadId;
 use serde::Serialize;
 use serde_json::Map;
@@ -42,7 +42,7 @@ impl ViewDescriptor {
         let ServerNotification::ItemCompleted(notification) = notification else {
             return None;
         };
-        let ThreadItem::McpToolCall {
+        let ThreadItemPayload::McpToolCall {
             id,
             server,
             tool,
@@ -50,16 +50,22 @@ impl ViewDescriptor {
             arguments,
             app_context,
             mcp_app_resource_uri,
+            mcp_app_ui,
             result,
             error,
             ..
-        } = &notification.item
+        } = &notification.item.payload
         else {
             return None;
         };
-        let resource_uri = app_context
+        let resource_uri = mcp_app_ui
             .as_ref()
-            .and_then(|context| context.resource_uri.as_ref())
+            .map(|ui| &ui.resource_uri)
+            .or_else(|| {
+                app_context
+                    .as_ref()
+                    .and_then(|context| context.resource_uri.as_ref())
+            })
             .or(mcp_app_resource_uri.as_ref())?
             .clone();
         if !resource_uri.starts_with("ui://") {

@@ -158,6 +158,7 @@ async fn only_matching_native_settings_confirm_request() {
     let mut updated = ThreadSettingsUpdatedNotification {
         thread_id: "background".into(),
         thread_settings: ThreadSettings {
+            environments: None,
             disabled_plugin_ids: Vec::new(),
             cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).unwrap(),
             approval_policy: codex_app_server_protocol::AskForApproval::Never,
@@ -239,4 +240,40 @@ async fn fast_write_reconnect_is_idempotent_and_shares_effort_queue() {
         exchange(&mut stream, invalid).await,
         json!({"error":"invalid control request"})
     );
+}
+
+#[tokio::test]
+async fn backend_change_invalidates_same_thread_revision_and_pending_confirmation() {
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let mut control = LocalControl::start(home.path(), "test".into()).unwrap();
+    let state = json!({"threadId":"same-thread", "model":"same-model", "effort":"high", "ready":true, "focused":true});
+    control.publish_for_backend(state.clone(), crate::backend_id::BackendId::new());
+    let mut expected = control.snapshot.borrow().clone();
+    let previous_revision = control.revision;
+    let mut request = request();
+    request.expected_revision = previous_revision;
+    request.expected_thread_id = "same-thread".to_string();
+    let (tx, mut rx) = mpsc::channel(/*buffer*/ 1);
+    control
+        .requests
+        .lock()
+        .unwrap()
+        .enqueue(request.clone().into(), &tx);
+    rx.recv().await.unwrap();
+    control.pending = Some((
+        request.clone().into(),
+        json!({"model":"same-model", "effort":"high"}),
+    ));
+    control.submitted_at = Some(Instant::now());
+    let second_backend = crate::backend_id::BackendId::new();
+    control.publish_for_backend(state.clone(), second_backend);
+    expected["revision"] = json!(previous_revision + 1);
+    assert_eq!(*control.snapshot.borrow(), expected);
+    assert!(control.pending.is_none());
+    assert_eq!(
+        control.requests.lock().unwrap().0[0].1["status"],
+        "unconfirmed"
+    );
+    control.publish_for_backend(state, second_backend);
+    assert_eq!(*control.snapshot.borrow(), expected);
 }

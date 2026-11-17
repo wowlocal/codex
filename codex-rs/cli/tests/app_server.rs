@@ -267,6 +267,9 @@ fn print_startup_config_rejects_sign_out_with_environment_access_token() -> Resu
 #[test]
 fn print_startup_config_validates_configuration() -> Result<()> {
     let home = TempDir::new()?;
+    // Exercise app-server's regular config diagnostics after independent startup validation.
+    let startup_config = home.path().join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     let config_path = home.path().join("config.toml");
     for (config, strict_arg, error) in [
         ("[broken\n", None, Some("failed to load configuration")),
@@ -279,6 +282,7 @@ fn print_startup_config_validates_configuration() -> Result<()> {
     ] {
         std::fs::write(&config_path, config)?;
         let output = codex_command(home.path())?
+            .env("CODEX_FORK_CONFIG", &startup_config)
             .args(["app-server", "--print-startup-config"])
             .args(strict_arg)
             .assert();

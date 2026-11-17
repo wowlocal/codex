@@ -8,13 +8,16 @@ use tempfile::TempDir;
 #[test]
 fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
     let home = TempDir::new()?;
-    // Uninstall must work independently of configuration parsing and authentication.
+    // Argument validation is independent of regular config after startup env validation.
+    let startup_config = home.path().join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     std::fs::write(home.path().join("config.toml"), "invalid config [")?;
     std::fs::write(home.path().join("auth.json"), "preserve credentials")?;
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     command
         .env("CODEX_HOME", home.path())
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["sandbox", "uninstall", "--help"])
         .assert()
         .success();
@@ -22,6 +25,7 @@ fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     command
         .env("CODEX_HOME", home.path())
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["sandbox", "uninstall", "unexpected"])
         .assert()
         .failure()

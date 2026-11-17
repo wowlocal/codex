@@ -104,6 +104,10 @@ impl AppServerSession {
         true
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "retain admission policy and per-message MCP App context"
+    )]
     pub(crate) async fn submit_user_message<'a>(
         &mut self,
         thread_id: ThreadId,
@@ -112,6 +116,10 @@ impl AppServerSession {
         active_turn: &mut Option<String>,
         preflight: impl FnOnce(&str) -> Result<Option<CyberAccessProgram>, String>,
         start_settings: impl FnOnce() -> TurnStartSettings<'a>,
+        additional_context: std::collections::HashMap<
+            String,
+            codex_app_server_protocol::AdditionalContextEntry,
+        >,
     ) -> Result<(UserMessageAdmission, Option<CloudModelSelection>), UserMessageSubmissionFailure>
     {
         let AppCommand::UserTurn {
@@ -145,6 +153,7 @@ impl AppServerSession {
                         turn_id.clone(),
                         client_user_message_id.clone(),
                         items.clone(),
+                        additional_context.clone(),
                     )
                     .await
                 {
@@ -215,6 +224,8 @@ impl AppServerSession {
                     client_user_message_id: Some(client_user_message_id.clone()),
                     input: items.clone(),
                     output_schema: final_output_json_schema.clone(),
+                    additional_context: (!additional_context.is_empty())
+                        .then_some(additional_context),
                     model,
                     effort,
                     ..Default::default()
@@ -265,6 +276,7 @@ impl AppServerSession {
             final_output_json_schema.clone(),
             program.map(Into::into),
             selection.as_ref(),
+            additional_context,
         )
         .await
         .map(|response| {
@@ -326,3 +338,7 @@ pub(crate) fn active_turn_steer_race(error: &TypedRequestError) -> Option<Active
         .to_string();
     Some(ActiveTurnSteerRace::ExpectedTurnMismatch { actual_turn_id })
 }
+
+#[cfg(test)]
+#[path = "user_message_submission_tests.rs"]
+mod tests;

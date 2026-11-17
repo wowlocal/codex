@@ -43,7 +43,7 @@ async fn grpc_exporters_never_bypass_env_proxy() -> Result<(), Box<dyn Error>> {
                 trace_exporter: OtelExporter::None,
                 metrics_exporter: OtelExporter::None,
                 runtime_metrics: false,
-                span_attributes: BTreeMap::new(),
+                span_attributes: HashMap::new(),
                 tracestate: BTreeMap::new(),
             };
             let exporter = OtelExporter::OtlpGrpc {

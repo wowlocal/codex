@@ -331,9 +331,17 @@ impl App {
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         let mcp_apps_browser = if config.features.enabled(Feature::EnableMcpApps) {
-            match McpAppsBrowser::start(app_server.request_handle(), app_event_tx.clone()).await {
+            match McpAppsBrowser::start(
+                app_server.backend_id(),
+                app_server.request_handle(),
+                app_event_tx.clone(),
+            )
+            .await
+            {
                 Ok(browser) => Some(browser),
-                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                Err(err) => {
+                    return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
+                }
             }
         } else {
             None
@@ -1098,6 +1106,7 @@ See the Codex keymap documentation for supported actions and examples."
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
             mcp_apps_browser,
+            parked_mcp_apps_browsers: HashMap::new(),
             pending_startup_thread_start,
             pending_server_version_notice: if pending_startup_thread_start {
                 initial_server_version_notice
@@ -1454,7 +1463,7 @@ See the Codex keymap documentation for supported actions and examples."
                 }
                 #[cfg(unix)]
                 if let Some(control) = local_control.as_mut() {
-                    control.publish(app.local_control_snapshot(tui));
+                    control.publish_for_backend(app.local_control_snapshot(tui), displayed_owner);
                 }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     let presentation = app.reconnect.presentation;
@@ -1676,7 +1685,7 @@ See the Codex keymap documentation for supported actions and examples."
                             Some(event) if owner != displayed_owner || !app.reconnect.offline => {
                                 #[cfg(unix)]
                                 if owner == displayed_owner
-                                    && let Some(control) = local_control.as_mut() { control.observe(&event); }
+                                    && let Some(control) = local_control.as_mut() { control.observe(&event.event); }
                                 if let Some(slot) = backends.slot(owner) {
                                     let (session, parked_inputs) = backends.session_and_parked_inputs(slot);
                                     app.handle_polled_backend_event(session, displayed_owner, parked_inputs, event).await;

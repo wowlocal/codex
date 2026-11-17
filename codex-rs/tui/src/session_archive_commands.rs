@@ -264,7 +264,7 @@ pub(super) async fn start_app_server_for_session_command(
             .wrap_err("failed to load config.toml")?;
         return Ok(AppServerSession::new(
             crate::backend_id::BackendId::new(),
-            super::connect_remote_app_server(endpoint).await?,
+            super::connect_remote_app_server(endpoint, Default::default()).await?,
             ThreadParamsMode::Remote,
         )
         .with_remote_cwd_override(cli.cwd.clone()));

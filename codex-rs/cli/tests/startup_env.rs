@@ -4,7 +4,7 @@ use codex_utils_cargo_bin::cargo_bin;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn doctor_rejects_malformed_startup_configuration_without_exposing_credentials()
+fn diagnostics_reject_malformed_startup_configuration_without_exposing_credentials()
 -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     std::fs::write(
@@ -13,7 +13,10 @@ fn doctor_rejects_malformed_startup_configuration_without_exposing_credentials()
     )?;
     for args in [
         vec!["doctor", "--json"],
+        vec!["doctor", "--network-only", "--json"],
         vec!["doctor", "--probe-filesystem-path", "."],
+        vec!["app-server", "--print-startup-config"],
+        vec!["sandbox", "uninstall", "--help"],
     ] {
         let output = Command::new(cargo_bin("codex")?)
             .args(args)

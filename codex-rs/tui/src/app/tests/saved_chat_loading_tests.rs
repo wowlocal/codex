@@ -44,7 +44,7 @@ async fn saved_chat_retry_and_supersession_with_pending_requests() -> Result<()>
     });
     let mut server = AppServerSession::new(
         crate::backend_id::BackendId::new(),
-        crate::connect_remote_app_server(endpoint).await?,
+        crate::connect_remote_app_server(endpoint, Default::default()).await?,
         crate::app_server_session::ThreadParamsMode::Remote,
     );
     let backend_id = server.backend_id();

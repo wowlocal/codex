@@ -184,11 +184,14 @@ async fn network_only_reports_recoverable_config_warnings_and_effective_config()
 async fn network_only_config_failure_does_not_guess_probe_targets() -> Result<()> {
     let proxy = MockServer::start().await;
     let home = TempDir::new()?;
+    let startup_config = home.path().join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     std::fs::write(
         home.path().join("config.toml"),
         "model_provider = sk-config-credential-fixture\n",
     )?;
     let output = local_command(&home)?
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["doctor", "--network-only", "--json"])
         .env("HTTP_PROXY", proxy.uri())
         .env("HTTPS_PROXY", proxy.uri())
@@ -227,11 +230,14 @@ async fn network_only_human_output() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_only_config_failure_human_output() -> Result<()> {
     let home = TempDir::new()?;
+    let startup_config = home.path().join("startup.toml");
+    std::fs::write(&startup_config, "")?;
     std::fs::write(
         home.path().join("config.toml"),
         "model_provider = sk-config-credential-fixture\n",
     )?;
     let output = local_command(&home)?
+        .env("CODEX_FORK_CONFIG", &startup_config)
         .args(["doctor", "--network-only", "--all", "--ascii", "--no-color"])
         .output()?;
     let stdout = String::from_utf8(output.stdout)?;

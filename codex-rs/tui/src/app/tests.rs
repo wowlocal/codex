@@ -49,15 +49,15 @@ mod home_cleanup_tests;
 mod key_chords;
 #[path = "tests/local_command_scroll_tests.rs"]
 mod local_command_scroll_tests;
-#[path = "tests/luna_reserve_recovery_tests.rs"]
-mod luna_reserve_recovery_tests;
-#[path = "tests/marketplace_upgrade_tests.rs"]
-mod marketplace_upgrade_tests;
 #[cfg(unix)]
 #[path = "tests/local_control_tests.rs"]
 mod local_control_tests;
 #[path = "tests/luna_reserve_recovery_tests.rs"]
 mod luna_reserve_recovery_tests;
+#[path = "tests/marketplace_upgrade_tests.rs"]
+mod marketplace_upgrade_tests;
+#[path = "tests/mcp_apps_bridge_tests.rs"]
+mod mcp_apps_bridge_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]
@@ -3281,7 +3281,7 @@ async fn docked_replay_finishes_while_skills_refresh_is_pending() -> Result<()> 
     });
     let mut app_server = AppServerSession::new(
         crate::backend_id::BackendId::new(),
-        crate::connect_remote_app_server(endpoint).await?,
+        crate::connect_remote_app_server(endpoint, Default::default()).await?,
         crate::app_server_session::ThreadParamsMode::Embedded,
     );
     let deadline = std::time::Duration::from_secs(/*secs*/ 5);
@@ -9149,6 +9149,7 @@ async fn make_test_app() -> Box<App> {
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
         mcp_apps_browser: None,
+        parked_mcp_apps_browsers: HashMap::new(),
         pending_startup_thread_start: false,
         pending_server_version_notice: None,
         pending_open_resume_picker: false,
@@ -9292,6 +9293,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),
             mcp_apps_browser: None,
+            parked_mcp_apps_browsers: HashMap::new(),
             pending_startup_thread_start: false,
             pending_server_version_notice: None,
             pending_open_resume_picker: false,

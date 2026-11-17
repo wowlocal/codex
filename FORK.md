@@ -8,14 +8,15 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.160.0`; the fork version is `0.160.0-fork.1`.
-The 2026-10-03 port rebases the previous `0.156.1-fork.1` release (`77502086f2`)
-onto that release. Nineteen fork commits remain; upstream now implements the
-shared Realtime connector, replacing the former standalone routing commit.
-MCP Apps, required proxy routing, startup environment loading, and BUSY native
-TUI controls are preserved alongside upstream network-policy enforcement.
-The port starts from `codex/native-tui-control` at `a16413c46f`, with native `[env]`
-loading restored from `c4e774a392` and Realtime routing restored from `b66720601b`.
+The current base is upstream `rust-v0.169.0`; the fork version is `0.169.0-fork.1`.
+The 2026-11-17 port rebases the previous `0.160.0-fork.1` release (`9a23812a94`)
+onto that stable release. All twenty fork commits are retained. MCP Apps negotiation
+and bounded context, required proxy routing, startup environment loading, and
+BUSY native TUI controls are preserved alongside upstream network-policy enforcement.
+
+The port adapts MCP Apps to the new message-admission path and preserves browser
+views separately for each backend. Native settings requests target the displayed
+backend; only that backend's settings events can confirm a pending request.
 
 ## Proxy-aware launcher
 
@@ -139,7 +140,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.160.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.169.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -157,6 +158,30 @@ for the release and `NEXTEST_TEST_THREADS=2 nice -n 10 just test -p codex-tui`
 for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
+
+## Port validation (2026-11-17, macOS Apple Silicon)
+
+- Independently reviewed all twenty retained fork commits against the previous
+  release and the intended-feature inventory. No blocking findings were found.
+  MCP Apps negotiation/reconnect/bounded context, proxy fail-closed routing,
+  startup environment loading, and all BUSY protocol v1 controls remain present.
+- Adapted MCP Apps context to start, steer, and cloud admission. Browser messages
+  and native settings confirmations are bound to their backend as well as thread;
+  switching backend invalidates old settings revisions and pending confirmation.
+- Ran 8,314 tests across CLI, TUI, MCP, API, HTTP, WebSocket, network-proxy,
+  telemetry, config, and app-server-client: 8,307 initially passed. Adapted seven
+  diagnostic-fixture/snapshot failures without relaxing startup proxy policy.
+  All 31 selected final rechecks passed, including every initial failure and
+  the new context/backend regressions. Ten tests were skipped in the broad run.
+- The BUSY native-client, effort, and model-menu suites passed all 35 tests.
+- Config schema regeneration and `just bazel-lock-update` produced no drift.
+- Final scoped Clippy completed without warnings. Formatting and artifact checks
+  are recorded with the release evidence.
+
+The full workspace suite and native Windows/Linux checks were not run. Browser
+parking/restoration was reviewed and wrong-backend message rejection is tested;
+there is no new browser end-to-end test of the complete A-to-B-to-A switch cycle.
+Final packaging, signing, and notarization status are recorded with the artifacts.
 
 ## Port validation (2026-10-03, macOS Apple Silicon)
 

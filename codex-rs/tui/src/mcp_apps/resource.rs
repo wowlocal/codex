@@ -104,6 +104,7 @@ pub(super) async fn load_app_resource(
         .request_typed(ClientRequest::McpResourceRead {
             request_id,
             params: McpResourceReadParams {
+                meta: None,
                 thread_id: Some(descriptor.thread_id.to_string()),
                 origin_call_id: Some(descriptor.call_id.clone()),
                 server: descriptor.server.clone(),

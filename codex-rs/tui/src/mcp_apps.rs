@@ -2,6 +2,7 @@
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+use crate::backend_id::BackendId;
 use crate::history_cell::WebHyperlinkHistoryCell;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::version::CODEX_CLI_VERSION;
@@ -64,14 +65,19 @@ pub(crate) struct McpAppsBrowser {
 
 impl McpAppsBrowser {
     pub(crate) async fn start(
+        backend_id: BackendId,
         request_handle: AppServerRequestHandle,
         app_event_tx: AppEventSender,
     ) -> std::io::Result<Self> {
+        // Browser messages carry an explicit thread ID and are checked by app dispatch.
+        // A parked voice widget must not permanently mute a retained browser view.
+        let app_event_tx = AppEventSender::new(app_event_tx.app_event_tx);
         let host_listener = TcpListener::bind("127.0.0.1:0").await?;
         let sandbox_listener = TcpListener::bind("127.0.0.1:0").await?;
         let host_origin = format!("http://{}", host_listener.local_addr()?);
         let sandbox_origin = format!("http://{}", sandbox_listener.local_addr()?);
         let state = Arc::new(BridgeState {
+            backend_id,
             request_handle,
             app_event_tx,
             host_origin,
@@ -173,6 +179,7 @@ impl McpAppViewLink {
 }
 
 struct BridgeState {
+    backend_id: BackendId,
     request_handle: AppServerRequestHandle,
     app_event_tx: AppEventSender,
     host_origin: String,
@@ -388,6 +395,7 @@ async fn send_message(
         .map_err(|error| (-32602, error))?;
     let (response_tx, response_rx) = oneshot::channel();
     state.app_event_tx.send(AppEvent::McpAppMessage {
+        backend_id: state.backend_id,
         thread_id,
         text,
         response_tx,

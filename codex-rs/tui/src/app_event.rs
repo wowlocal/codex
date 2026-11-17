@@ -533,6 +533,7 @@ pub(crate) enum AppEvent {
 
     /// Submit a user message initiated by an MCP App companion-browser view.
     McpAppMessage {
+        backend_id: crate::backend_id::BackendId,
         thread_id: ThreadId,
         text: String,
         response_tx: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,

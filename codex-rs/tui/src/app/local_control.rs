@@ -42,7 +42,7 @@ impl App {
         request: SettingsRequest,
     ) {
         let state = self.local_control_snapshot(tui);
-        control.publish(state.clone());
+        control.publish_for_backend(state.clone(), app_server.backend_id());
         let error = if state["ready"] != true || state["focused"] != true {
             Some("TUI is not ready and focused")
         } else if request.expected_revision != control.revision

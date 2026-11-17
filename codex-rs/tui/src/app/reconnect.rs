@@ -423,8 +423,12 @@ impl App {
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
         if self.config.features.enabled(Feature::EnableMcpApps) {
             self.mcp_apps_browser = Some(
-                McpAppsBrowser::start(app_server.request_handle(), self.app_event_tx.clone())
-                    .await?,
+                McpAppsBrowser::start(
+                    app_server.backend_id(),
+                    app_server.request_handle(),
+                    self.app_event_tx.clone(),
+                )
+                .await?,
             );
         }
         let managed_daemon = self

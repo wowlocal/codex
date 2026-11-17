@@ -216,8 +216,11 @@ async fn gateway_session(
     // Keep the connection open after the final reply. An extra request is recorded and closes it.
     script.push(vec![]);
     let gateway = start_websocket_server(vec![script]).await;
-    let client =
-        crate::connect_remote_app_server(crate::resolve_remote_addr(gateway.uri())?).await?;
+    let client = crate::connect_remote_app_server(
+        crate::resolve_remote_addr(gateway.uri())?,
+        Default::default(),
+    )
+    .await?;
     Ok((
         AppServerSession::new(BackendId::new(), client, ThreadParamsMode::Embedded),
         gateway,

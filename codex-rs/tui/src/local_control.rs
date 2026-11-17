@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::backend_id::BackendId;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ServerNotification;
 use serde::Deserialize;
@@ -102,6 +103,7 @@ pub(crate) struct LocalControl {
     listener: JoinHandle<()>,
     pub revision: u64,
     previous: Value,
+    backend_id: Option<BackendId>,
 }
 
 impl LocalControl {
@@ -171,7 +173,25 @@ impl LocalControl {
             listener,
             revision: 0,
             previous: Value::Null,
+            backend_id: None,
         })
+    }
+
+    /// Bind selection revisions to their backend without publishing process-local IDs.
+    pub fn publish_for_backend(&mut self, state: Value, backend_id: BackendId) {
+        if self
+            .backend_id
+            .replace(backend_id)
+            .is_some_and(|previous| previous != backend_id)
+        {
+            // Every app snapshot has readiness/focus fields, so invalidating this cache
+            // forces a new revision even when the two backends expose the same thread.
+            self.previous = Value::Null;
+            if let Some((request, _)) = &self.pending {
+                self.finish(request.request_id, json!({"error":"selection changed before settings confirmation", "uncertain":true}));
+            }
+        }
+        self.publish(state);
     }
 
     pub fn publish(&mut self, state: Value) {
@@ -260,7 +280,9 @@ impl LocalControl {
                 }
                 _ => (),
             },
-            AppServerEvent::Disconnected { .. } | AppServerEvent::Lagged { .. } => {
+            AppServerEvent::Disconnected { .. }
+            | AppServerEvent::ThreadStreamDisconnected(_)
+            | AppServerEvent::Lagged { .. } => {
                 self.finish(request.request_id, json!({"error":"confirmation stream unavailable; read current settings","uncertain":true}));
             }
             AppServerEvent::ServerRequest(_) => (),

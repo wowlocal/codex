@@ -66,6 +66,11 @@ pub(super) async fn try_submit_user_turn(
             &mut active,
             preflight,
             start_settings,
+            app.mcp_apps_browser
+                .as_ref()
+                .map_or_else(HashMap::new, |browser| {
+                    browser.additional_context(thread_id)
+                }),
         )
         .await;
     if active != original_active

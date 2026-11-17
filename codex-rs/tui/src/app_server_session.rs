@@ -3777,6 +3777,7 @@ mod tests {
                 Some(output_schema.clone()),
                 Some(CyberAccessProgram::DaybreakBlue.into()),
                 /*cloud_selection*/ None,
+                Default::default(),
             ),
             async {
                 let command = commands.recv().await.expect("cloud turn start");
