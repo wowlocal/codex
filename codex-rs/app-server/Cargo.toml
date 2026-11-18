@@ -25,6 +25,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-required-proxy = { workspace = true }
 codex-agent-message-board-host = { workspace = true }
 codex-utils-process = { workspace = true }
 anyhow = { workspace = true }

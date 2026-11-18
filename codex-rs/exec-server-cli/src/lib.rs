@@ -30,6 +30,7 @@ pub fn run_standalone() -> anyhow::Result<()> {
         let mut cli = ExecServerCli::parse_from(&args);
         cli.config_overrides = collect_config_overrides(ExecServerCli::command(), args)
             .unwrap_or_else(|error| error.exit());
+        codex_required_proxy::require_local_helper_proxy()?;
         cli.command.run(&paths, &cli.config_overrides).await
     })
 }

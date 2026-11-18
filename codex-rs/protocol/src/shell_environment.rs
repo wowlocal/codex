@@ -71,7 +71,11 @@ pub fn scrub_non_inheritable_env_vars(command: &mut std::process::Command) {
 /// was built.
 pub fn apply_command_proxy_env(env: &mut HashMap<String, String>) {
     let thread_id = env.get(CODEX_THREAD_ID_ENV_VAR).cloned();
-    for (key, value) in codex_required_proxy::command_proxy_env(thread_id.as_deref()) {
+    let proxy_env = codex_required_proxy::command_proxy_env(thread_id.as_deref());
+    if !proxy_env.is_empty() {
+        env.retain(|key, _| !codex_required_proxy::is_command_proxy_env_key(key));
+    }
+    for (key, value) in proxy_env {
         env.insert(key, value);
     }
 }

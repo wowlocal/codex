@@ -162,10 +162,7 @@ pub fn run_main(args: Args) -> Result<()> {
     let server = Server::from_listener(listener, None)
         .map_err(|err| anyhow!("creating HTTP server: {err}"))?;
     let client = Arc::new(
-        Client::builder()
-            .redirect(auth.redirect_policy())
-            // Disable reqwest's 30s default so long-lived response streams keep flowing.
-            .timeout(None::<Duration>)
+        upstream_client_builder(&auth)?
             .build()
             .context("building reqwest client")?,
     );
@@ -197,6 +194,24 @@ pub fn run_main(args: Args) -> Result<()> {
     }
 
     Err(anyhow!("server stopped unexpectedly"))
+}
+
+fn upstream_client_builder(
+    auth: &Auth,
+) -> Result<reqwest::blocking::ClientBuilder, codex_http_client::BuildCustomCaTransportError> {
+    let builder = Client::builder()
+        .redirect(auth.redirect_policy())
+        // Long-lived response streams must not inherit reqwest's 30s default.
+        .timeout(None::<Duration>);
+    if codex_required_proxy::is_active() {
+        let config = codex_http_client::build_rustls_client_config_with_custom_ca()?;
+        Ok(builder
+            .use_preconfigured_tls(config.as_ref().clone())
+            .no_proxy()
+            .proxy(codex_http_client::required_reqwest_proxy()))
+    } else {
+        Ok(builder)
+    }
 }
 
 fn bind_listener(port: Option<u16>) -> Result<(TcpListener, SocketAddr)> {
@@ -346,3 +361,7 @@ fn forward_request(
     let _ = req.respond(response);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "required_proxy_tests.rs"]
+mod required_proxy_tests;

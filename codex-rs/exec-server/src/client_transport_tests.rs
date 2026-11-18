@@ -898,3 +898,41 @@ async fn initial_noise_connection_refreshes_bundle_after_exhausting_initial_retr
     accepted_server.await??;
     Ok(())
 }
+
+#[test]
+fn stdio_proxy_marker_requires_the_packaged_executor_path() -> std::io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let bin = temp.path().join("bin");
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&bin)?;
+    std::fs::create_dir_all(&other)?;
+    let name = format!("codex-exec-server{}", std::env::consts::EXE_SUFFIX);
+    let packaged = bin.join(&name);
+    let wrapper = other.join(&name);
+    std::fs::write(&packaged, b"packaged fixture")?;
+    std::fs::write(&wrapper, b"custom wrapper fixture")?;
+    let current = bin.join(format!("codex{}", std::env::consts::EXE_SUFFIX));
+    assert!(super::is_packaged_local_executor(
+        &packaged.to_string_lossy(),
+        &current
+    ));
+    assert!(!super::is_packaged_local_executor(
+        &wrapper.to_string_lossy(),
+        &current
+    ));
+    assert!(!super::is_packaged_local_executor(&name, &current));
+    assert!(!super::is_packaged_local_executor(
+        &bin.join("missing").to_string_lossy(),
+        &current
+    ));
+    #[cfg(unix)]
+    {
+        let link = temp.path().join("packaged-link");
+        std::os::unix::fs::symlink(&packaged, &link)?;
+        assert!(super::is_packaged_local_executor(
+            &link.to_string_lossy(),
+            &current
+        ));
+    }
+    Ok(())
+}

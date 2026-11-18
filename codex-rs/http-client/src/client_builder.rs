@@ -399,11 +399,12 @@ impl HttpClientBuilder {
 
     fn reqwest_builder(self, proxy_routing: ProxyRouting) -> reqwest::ClientBuilder {
         let builder = self.base_reqwest_builder();
+        if codex_required_proxy::is_active() {
+            return builder
+                .no_proxy()
+                .proxy(crate::outbound_proxy::required_reqwest_proxy());
+        }
         match proxy_routing {
-            // reqwest discovers proxies from the environment, which never holds the required proxy.
-            ProxyRouting::TransportDefault if codex_required_proxy::is_active() => {
-                builder.proxy(crate::outbound_proxy::required_reqwest_proxy())
-            }
             ProxyRouting::TransportDefault => builder,
             ProxyRouting::Direct => builder.no_proxy(),
         }

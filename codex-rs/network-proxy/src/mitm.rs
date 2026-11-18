@@ -184,6 +184,10 @@ impl MitmState {
         self.inspect
     }
 
+    pub(crate) fn upstream_tls_root_store(&self) -> Arc<rustls::RootCertStore> {
+        self.upstream_tls_root_store.clone()
+    }
+
     pub(crate) fn max_body_bytes(&self) -> usize {
         self.max_body_bytes
     }

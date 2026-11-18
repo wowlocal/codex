@@ -295,12 +295,24 @@ where
             Err(dotenvy::Error::Io(err)) if err.kind() != std::io::ErrorKind::InvalidData => break,
             Err(_) => continue,
         };
-        if !key.to_ascii_uppercase().starts_with(ILLEGAL_ENV_VAR_PREFIX) {
+        if dotenv_entry_allowed(&key, &value) {
             // It is safe to call set_var() because our process is
             // single-threaded at this point in its execution.
             unsafe { std::env::set_var(&key, &value) };
         }
     }
+}
+
+// Startup has already selected the authoritative gateway. A later .env must neither
+// reintroduce upstream credentials nor override proxy routing with an empty URL/NO_PROXY=*.
+fn dotenv_entry_allowed(key: &str, value: &str) -> bool {
+    if key.to_ascii_uppercase().starts_with(ILLEGAL_ENV_VAR_PREFIX) {
+        return false;
+    }
+    if codex_required_proxy::is_command_proxy_env_key(key) {
+        return false;
+    }
+    !key.to_ascii_uppercase().contains("PROXY") || !codex_required_proxy::carries_credentials(value)
 }
 
 /// Creates a temporary directory with either:
@@ -597,6 +609,34 @@ mod tests {
             install_context,
             path_dir,
         })
+    }
+
+    #[test]
+    fn dotenv_cannot_override_startup_proxy_or_reintroduce_credentials() {
+        for key in [
+            "HTTP_PROXY",
+            "hTtPs_PrOxY",
+            "ALL_PROXY",
+            "no_proxy",
+            "NODE_USE_ENV_PROXY",
+            "CODEX_FORK_COMMAND_PROXY_V1",
+        ] {
+            assert!(!super::dotenv_entry_allowed(key, ""));
+            assert!(!super::dotenv_entry_allowed(
+                key,
+                "http://codex@127.0.0.1:1234"
+            ));
+        }
+        assert!(!super::dotenv_entry_allowed(
+            "CUSTOM_PROXY",
+            "http://user:secret@proxy.invalid:8080"
+        ));
+        assert!(super::dotenv_entry_allowed(
+            "DATABASE_URL",
+            "postgresql://user:pass@database.internal/db"
+        ));
+        assert!(super::dotenv_entry_allowed("OPENAI_API_KEY", "some-key"));
+        assert!(super::dotenv_entry_allowed("TZ", "UTC"));
     }
 
     #[cfg(windows)]

@@ -130,7 +130,16 @@ fn build_http_client_inner(
         reqwest::blocking::Client::builder().timeout(resolve_otlp_timeout(timeout_var));
     // reqwest discovers proxies from the environment, which never holds the required proxy.
     if codex_required_proxy::is_active() {
-        builder = builder.proxy(codex_http_client::required_reqwest_proxy());
+        builder = builder
+            .no_proxy()
+            .proxy(codex_http_client::required_reqwest_proxy());
+        if tls.ca_certificate.is_none()
+            && tls.client_certificate.is_none()
+            && tls.client_private_key.is_none()
+        {
+            let config = codex_http_client::build_rustls_client_config_with_custom_ca()?;
+            builder = builder.use_preconfigured_tls(config.as_ref().clone());
+        }
     }
 
     if let Some(path) = tls.ca_certificate.as_ref() {

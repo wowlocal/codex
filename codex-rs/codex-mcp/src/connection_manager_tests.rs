@@ -464,6 +464,103 @@ impl InProcessTransportFactory for DisconnectingToolsTransportFactory {
 }
 
 #[tokio::test]
+async fn refreshed_catalog_preserves_ui_visibility_and_requires_apps_negotiation()
+-> anyhow::Result<()> {
+    for apps_server in [false, true] {
+        for negotiated in [false, true] {
+            let server_name = if apps_server {
+                CODEX_APPS_MCP_SERVER_NAME
+            } else {
+                "docs"
+            };
+            let mut tool = create_test_tool(server_name, "app_only");
+            tool.tool.meta = Some(rmcp::model::MetaObject(
+                serde_json::json!({
+                    "ui/resourceUri": "ui://legacy/view",
+                    "ui": {"resourceUri": "ui://current/view", "visibility": ["app"]}
+                })
+                .as_object()
+                .expect("metadata object")
+                .clone(),
+            ));
+            let client = Arc::new(
+                RmcpClient::new_in_process_client(Arc::new(MutableToolsTransportFactory {
+                    server: MutableToolsServer {
+                        tools: Arc::new(tokio::sync::RwLock::new(vec![tool.tool.clone()])),
+                        block_tool_listing: Arc::new(AtomicBool::new(false)),
+                    },
+                }))
+                .await?,
+            );
+            client
+                .initialize(
+                    InitializeRequestParams::new(
+                        ClientCapabilities::default(),
+                        Implementation::new("codex-test", "0.0.0-test"),
+                    )
+                    .with_protocol_version(ProtocolVersion::V_2025_06_18),
+                    None,
+                    Box::new(|_, _| async { Err(anyhow!("unexpected elicitation")) }.boxed()),
+                )
+                .await?;
+            let mut managed =
+                create_test_managed_client(vec![create_test_tool(server_name, "initial")]).await;
+            managed.client = Arc::clone(&client);
+            managed.mcp_apps_negotiated = negotiated;
+            let approval = Constrained::allow_any(AskForApproval::OnRequest);
+            let permissions = Constrained::allow_any(PermissionProfile::default());
+            let mut manager = McpConnectionSet::new_uninitialized(&approval, &permissions, true);
+            manager.insert_test_client(
+                server_name,
+                AsyncManagedClient {
+                    ema_authority: None,
+                    client: futures::future::ready(Ok(managed)).boxed().shared(),
+                    is_codex_apps_mcp_server: apps_server,
+                    server_capabilities: Arc::new(std::sync::Mutex::new(None)),
+                    cached_server_info: None,
+                    codex_apps_tools_cache_context: None,
+                    tool_catalog_cache_context: None,
+                    startup_complete: Arc::new(AtomicBool::new(true)),
+                    connection_slot: None,
+                    startup_reconnect: None,
+                    cancel_token: CancellationToken::new(),
+                },
+            );
+            if apps_server {
+                manager.refresh_codex_apps_tools_for_discovery().await?;
+            } else {
+                client
+                    .call_tool("notify".into(), None, |_| Ok(None), None)
+                    .await?;
+                assert_eq!(client.tool_list_revision().current(), 1);
+                let managed = manager.test_client(server_name).client().await?;
+                manager.servers[&McpServerKey::unscoped(server_name)]
+                    .refresh_notified_catalog(server_name, &managed)
+                    .await;
+            }
+            let managed = manager.test_client(server_name).client().await?;
+            let tools = managed
+                .tool_catalog
+                .read(|catalog| catalog.tools.to_vec())
+                .await;
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].callable_name, "app_only");
+            let meta = tools[0]
+                .tool
+                .meta
+                .as_ref()
+                .expect("visibility metadata retained");
+            assert_eq!(meta.contains_key("ui/resourceUri"), negotiated);
+            assert_eq!(meta["ui"].get("resourceUri").is_some(), negotiated);
+            assert_eq!(meta["ui"]["visibility"], serde_json::json!(["app"]));
+            assert!(!tool_is_model_visible(&tools[0]));
+            client.shutdown().await;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_tool_catalog_rejects_repeated_pagination_cursor() -> anyhow::Result<()> {
     let requests = Arc::new(AtomicUsize::new(0));
     let client = Arc::new(

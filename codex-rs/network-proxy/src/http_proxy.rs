@@ -1,7 +1,6 @@
 use crate::attribution::BindConnectionAttribution;
 use crate::config::NetworkMode;
 use crate::connect_policy::ResolvedTargetsDenied;
-use crate::connect_policy::TargetCheckedTcpConnector;
 use crate::connection_lifecycle::CancelOnShutdown;
 use crate::mitm;
 use crate::mitm_hook::HookEvaluation;
@@ -35,6 +34,7 @@ use crate::state::BlockedRequest;
 use crate::state::BlockedRequestArgs;
 use crate::state::NetworkProxyState;
 use crate::upstream::UpstreamClient;
+use crate::upstream::connect_tunnel;
 use crate::upstream::proxy_for_connect;
 use anyhow::Context as _;
 use anyhow::Result;
@@ -61,12 +61,9 @@ use rama_http::headers::HeaderMapExt;
 use rama_http::headers::Host;
 use rama_http::layer::remove_header::RemoveResponseHeaderLayer;
 use rama_http::matcher::MethodMatcher;
-use rama_http_backend::client::proxy::layer::HttpProxyConnector;
 use rama_http_backend::server::HttpServer;
 use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_backend::server::layer::upgrade::Upgraded;
-use rama_net::Protocol;
-use rama_net::client::ConnectorService;
 use rama_net::client::EstablishedClientConnection;
 use rama_net::http::RequestContext;
 use rama_net::proxy::ProxyRequest;
@@ -76,8 +73,6 @@ use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
 use rama_tcp::client::Request as TcpRequest;
 use rama_tcp::server::TcpListener;
-use rama_tls_rustls::client::TlsConnectorDataBuilder;
-use rama_tls_rustls::client::TlsConnectorLayer;
 use serde::Serialize;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -493,11 +488,7 @@ where
             ));
         }
     };
-    let proxy = if allow_upstream_proxy {
-        proxy_for_connect(&authority, &app_state)?
-    } else {
-        None
-    };
+    let proxy = proxy_for_connect(&authority, &app_state, allow_upstream_proxy)?;
     match proxy.as_ref() {
         Some(proxy) => info!(
             "CONNECT route selected (host={}, port={}, route=upstream_proxy, proxy={})",
@@ -509,39 +500,27 @@ where
         ),
     }
 
-    let mut extensions = upgraded.extensions().clone();
-    if let Some(proxy) = proxy {
-        extensions.insert(proxy);
-    }
-
-    let req = TcpRequest::new_with_extensions(authority.clone(), extensions)
-        .with_protocol(Protocol::HTTPS);
-    let proxy_connector = HttpProxyConnector::optional(TargetCheckedTcpConnector::new(app_state));
-    let tls_config = TlsConnectorDataBuilder::new()
-        .with_alpn_protocols_http_auto()
-        .build();
-    let connector = TlsConnectorLayer::tunnel(None)
-        .with_connector_data(tls_config)
-        .into_layer(proxy_connector);
+    let req = TcpRequest::new_with_extensions(authority.clone(), upgraded.extensions().clone());
     info!("CONNECT upstream dial started (target={authority})");
     let connect_started_at = Instant::now();
-    let EstablishedClientConnection { conn: target, .. } = match connector.connect(req).await {
-        Ok(connection) => {
-            info!(
-                "CONNECT upstream dial established (target={authority}, elapsed_ms={})",
-                connect_started_at.elapsed().as_millis()
-            );
-            connection
-        }
-        Err(err) => {
-            warn!(
-                "CONNECT upstream dial failed (target={authority}, elapsed_ms={})",
-                connect_started_at.elapsed().as_millis()
-            );
-            return Err(OpaqueError::from_boxed(err)
-                .with_context(|| format!("establish CONNECT tunnel to {authority}")));
-        }
-    };
+    let EstablishedClientConnection { conn: target, .. } =
+        match connect_tunnel(app_state, req, proxy).await {
+            Ok(connection) => {
+                info!(
+                    "CONNECT upstream dial established (target={authority}, elapsed_ms={})",
+                    connect_started_at.elapsed().as_millis()
+                );
+                connection
+            }
+            Err(err) => {
+                warn!(
+                    "CONNECT upstream dial failed (target={authority}, elapsed_ms={})",
+                    connect_started_at.elapsed().as_millis()
+                );
+                return Err(OpaqueError::from_boxed(err)
+                    .with_context(|| format!("establish CONNECT tunnel to {authority}")));
+            }
+        };
 
     let proxy_req = ProxyRequest {
         source: upgraded,

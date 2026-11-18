@@ -814,12 +814,19 @@ fn run_update_action(
     action: UpdateAction,
     cli_executable: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
+    let proxy_env = codex_required_proxy::command_proxy_env_checked(None)?;
+    #[cfg(windows)]
+    anyhow::ensure!(
+        !codex_required_proxy::is_active() || action != UpdateAction::StandaloneWindows,
+        "The Windows standalone installer cannot enforce the required proxy; update using a proxy-aware package manager"
+    );
     if let UpdateAction::Daemon(source) = action {
         let executable = cli_executable
             .ok_or_else(|| anyhow::anyhow!("Cannot locate the launching Codex CLI"))?;
         println!("Updating the local background server...");
         let status = std::process::Command::new(executable)
             .args(source.command_args())
+            .envs(proxy_env.iter().cloned())
             .env(codex_app_server_daemon::telemetry::HANDOFF_ENV, "1")
             .status()?;
         anyhow::ensure!(
@@ -854,6 +861,7 @@ fn run_update_action(
             // absolute path through the system command processor.
             std::process::Command::new(command_path)
                 .args(args)
+                .envs(proxy_env.iter().cloned())
                 .current_dir(update_cwd.path())
                 .status()?
         }
@@ -867,6 +875,7 @@ fn run_update_action(
                 .collect();
             std::process::Command::new(&command_path)
                 .args(&normalized_args)
+                .envs(proxy_env.iter().cloned())
                 // Package managers search parent directories for project config and hooks.
                 .current_dir("/")
                 .status()?
@@ -1060,7 +1069,13 @@ fn main() -> anyhow::Result<()> {
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         // Finish polling the large subcommand dispatcher before polling interactive TUI events.
-        if let Some(tui) = Box::pin(dispatch_cli(arg0_paths, remote_control_disabled, startup_proxy)).await? {
+        if let Some(tui) = Box::pin(dispatch_cli(
+            arg0_paths,
+            remote_control_disabled,
+            startup_proxy,
+        ))
+        .await?
+        {
             tui.await?;
         }
         Ok(())

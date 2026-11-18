@@ -16,6 +16,7 @@ use crate::network_policy::emit_block_decision_audit_event;
 use crate::network_policy::evaluate_host_policy;
 use crate::network_policy::evaluate_host_policy_for_dial;
 use crate::policy::normalize_host;
+use crate::policy::numeric_host_address;
 use crate::reasons::REASON_METHOD_NOT_ALLOWED;
 use crate::reasons::REASON_MITM_REQUIRED;
 use crate::reasons::REASON_PROXY_DISABLED;
@@ -25,6 +26,9 @@ use crate::runtime::HostMitmRequirement;
 use crate::state::BlockedRequest;
 use crate::state::BlockedRequestArgs;
 use crate::state::NetworkProxyState;
+use crate::upstream::UpstreamTunnel;
+use crate::upstream::connect_tunnel;
+use crate::upstream::required_proxy_for_target;
 use anyhow::Context as _;
 use anyhow::Result;
 use rama_core::Service;
@@ -41,6 +45,7 @@ use rama_net::client::EstablishedClientConnection;
 use rama_net::proxy::ProxyRequest;
 use rama_net::proxy::ProxyTarget;
 use rama_net::proxy::StreamForwardService;
+use rama_net::stream::ClientSocketInfo;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use rama_socks5::Socks5Acceptor;
@@ -487,6 +492,47 @@ async fn connect_opaque_tcp(
     state: Arc<NetworkProxyState>,
     req: TcpRequest,
 ) -> Result<EstablishedClientConnection<Socks5TcpConnection, TcpRequest>, BoxError> {
+    if let Some(required) = codex_required_proxy::current() {
+        if state.tcp_upstream_proxy.is_some() {
+            // The executor-provisioned next hop is mandatory, including direct-list targets.
+            // Chaining two independently mandatory HTTP proxies is not supported here.
+            return Err("required proxy is incompatible with the executor's mandatory TCP upstream; refusing connection".into());
+        }
+        let proxy = required_proxy_for_target(
+            &required,
+            &req.authority,
+            state.allow_upstream_proxy().await?,
+            state.proxy_private_ips_via_upstream,
+        )?;
+        if let Some(proxy) = proxy {
+            let host = normalize_host(&req.authority.host.to_string());
+            let target_ip = numeric_host_address(&host);
+            let same_port = req.authority.port == proxy.address.port;
+            if same_port && host == normalize_host(&proxy.address.host.to_string()) {
+                return Err("cannot tunnel back into the required upstream proxy".into());
+            }
+            let EstablishedClientConnection { input, conn } =
+                connect_tunnel(state, req, Some(proxy)).await?;
+            if same_port && let Some(ip) = target_ip {
+                let peer = conn
+                    .extensions()
+                    .get::<ClientSocketInfo>()
+                    .ok_or("missing required upstream peer address")?
+                    .0
+                    .peer_addr();
+                if ip.to_canonical() == peer.ip().to_canonical() {
+                    return Err("cannot tunnel back into the required upstream proxy".into());
+                }
+            }
+            return Ok(EstablishedClientConnection {
+                input,
+                conn: Socks5TcpConnection::RequiredProxy(Box::new(RequiredProxyTunnel::new(conn))),
+            });
+        }
+        // An explicit [proxy] direct destination (including implicit loopback) must not be
+        // diverted to the environment or executor's alternative TCP upstream.
+        return connect_direct_opaque_tcp(state, req).await;
+    }
     if let Some(proxy) = &state.tcp_upstream_proxy {
         let tunnel = proxy
             .connect(
@@ -500,6 +546,13 @@ async fn connect_opaque_tcp(
             conn: Socks5TcpConnection::Tunnel(tunnel),
         });
     }
+    connect_direct_opaque_tcp(state, req).await
+}
+
+async fn connect_direct_opaque_tcp(
+    state: Arc<NetworkProxyState>,
+    req: TcpRequest,
+) -> Result<EstablishedClientConnection<Socks5TcpConnection, TcpRequest>, BoxError> {
     let EstablishedClientConnection { input, conn } =
         TargetCheckedTcpConnector::new(state).serve(req).await?;
     Ok(EstablishedClientConnection {
@@ -518,9 +571,35 @@ enum SocksMitmMode {
 }
 
 #[derive(Debug)]
+struct RequiredProxyTunnel {
+    // Rama's upgraded HTTP stream is Send, but not Sync. The Socket contract requires Sync;
+    // shared access exposes only a snapshot of metadata, while I/O always has exclusive &mut
+    // access. Mutex supplies that contract without unsafe or a lock held across polling/await.
+    stream: std::sync::Mutex<UpstreamTunnel>,
+    extensions: Extensions,
+}
+
+impl RequiredProxyTunnel {
+    fn new(stream: UpstreamTunnel) -> Self {
+        let extensions = stream.extensions().clone();
+        Self {
+            stream: std::sync::Mutex::new(stream),
+            extensions,
+        }
+    }
+
+    fn stream_mut(&mut self) -> &mut UpstreamTunnel {
+        self.stream
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[derive(Debug)]
 enum Socks5TcpConnection {
     Direct(TcpStream),
     Tunnel(Rewind<TcpStream>),
+    RequiredProxy(Box<RequiredProxyTunnel>),
     Mitm {
         target: HostWithPort,
         mode: NetworkMode,
@@ -546,6 +625,7 @@ impl AsyncRead for Socks5TcpConnection {
         match self.get_mut() {
             Self::Direct(stream) => Pin::new(stream).poll_read(cx, buf),
             Self::Tunnel(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::RequiredProxy(stream) => Pin::new(stream.stream_mut()).poll_read(cx, buf),
             Self::Mitm { .. } | Self::DetectProtocol { .. } => Poll::Ready(Ok(())),
         }
     }
@@ -560,6 +640,7 @@ impl AsyncWrite for Socks5TcpConnection {
         match self.get_mut() {
             Self::Direct(stream) => Pin::new(stream).poll_write(cx, buf),
             Self::Tunnel(stream) => Pin::new(stream).poll_write(cx, buf),
+            Self::RequiredProxy(stream) => Pin::new(stream.stream_mut()).poll_write(cx, buf),
             Self::Mitm { .. } | Self::DetectProtocol { .. } => Poll::Ready(Ok(buf.len())),
         }
     }
@@ -568,6 +649,7 @@ impl AsyncWrite for Socks5TcpConnection {
         match self.get_mut() {
             Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
             Self::Tunnel(stream) => Pin::new(stream).poll_flush(cx),
+            Self::RequiredProxy(stream) => Pin::new(stream.stream_mut()).poll_flush(cx),
             Self::Mitm { .. } | Self::DetectProtocol { .. } => Poll::Ready(Ok(())),
         }
     }
@@ -576,6 +658,7 @@ impl AsyncWrite for Socks5TcpConnection {
         match self.get_mut() {
             Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Tunnel(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::RequiredProxy(stream) => Pin::new(stream.stream_mut()).poll_shutdown(cx),
             Self::Mitm { .. } | Self::DetectProtocol { .. } => Poll::Ready(Ok(())),
         }
     }
@@ -585,18 +668,20 @@ impl Socket for Socks5TcpConnection {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         match self {
             Self::Direct(stream) => stream.local_addr(),
-            Self::Tunnel(_) | Self::Mitm { .. } | Self::DetectProtocol { .. } => {
-                Ok(SocketAddr::from(([0, 0, 0, 0], 0)))
-            }
+            Self::Tunnel(_)
+            | Self::RequiredProxy(_)
+            | Self::Mitm { .. }
+            | Self::DetectProtocol { .. } => Ok(SocketAddr::from(([0, 0, 0, 0], 0))),
         }
     }
 
     fn peer_addr(&self) -> io::Result<SocketAddr> {
         match self {
             Self::Direct(stream) => stream.peer_addr(),
-            Self::Tunnel(_) | Self::Mitm { .. } | Self::DetectProtocol { .. } => {
-                Ok(SocketAddr::from(([0, 0, 0, 0], 0)))
-            }
+            Self::Tunnel(_)
+            | Self::RequiredProxy(_)
+            | Self::Mitm { .. }
+            | Self::DetectProtocol { .. } => Ok(SocketAddr::from(([0, 0, 0, 0], 0))),
         }
     }
 }
@@ -606,6 +691,7 @@ impl ExtensionsRef for Socks5TcpConnection {
         match self {
             Self::Direct(stream) => stream.extensions(),
             Self::Tunnel(stream) => stream.extensions(),
+            Self::RequiredProxy(stream) => &stream.extensions,
             Self::Mitm { extensions, .. } | Self::DetectProtocol { extensions, .. } => extensions,
         }
     }
@@ -616,6 +702,7 @@ impl ExtensionsMut for Socks5TcpConnection {
         match self {
             Self::Direct(stream) => stream.extensions_mut(),
             Self::Tunnel(stream) => stream.extensions_mut(),
+            Self::RequiredProxy(stream) => &mut stream.extensions,
             Self::Mitm { extensions, .. } | Self::DetectProtocol { extensions, .. } => extensions,
         }
     }
@@ -626,12 +713,12 @@ async fn proxy_socks5_tcp(
 ) -> Result<(), BoxError> {
     let ProxyRequest { mut source, target } = request;
     match target {
-        target @ (Socks5TcpConnection::Direct(_) | Socks5TcpConnection::Tunnel(_)) => {
-            StreamForwardService::default()
-                .serve(ProxyRequest { source, target })
-                .await
-                .map_err(Into::into)
-        }
+        target @ (Socks5TcpConnection::Direct(_)
+        | Socks5TcpConnection::Tunnel(_)
+        | Socks5TcpConnection::RequiredProxy(_)) => StreamForwardService::default()
+            .serve(ProxyRequest { source, target })
+            .await
+            .map_err(Into::into),
         Socks5TcpConnection::Mitm {
             target,
             mode,
@@ -857,10 +944,22 @@ async fn inspect_socks5_udp(
             warn!("SOCKS UDP blocked (client={client}, host={host}, reason={reason})");
             Err(policy_denied_error(&reason, &details))
         }
-        Ok(NetworkDecision::Allow) => Ok(RelayResponse {
-            maybe_payload: Some(payload),
-            extensions,
-        }),
+        Ok(NetworkDecision::Allow) => {
+            if codex_required_proxy::current()
+                .is_some_and(|required| !required.bypasses_host(&host))
+            {
+                // HTTP(S) CONNECT cannot carry UDP. Never let a sandbox's SOCKS UDP request
+                // turn the mandatory TCP upstream into a direct datagram route.
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "SOCKS UDP cannot use the required upstream proxy; refusing direct datagram",
+                ));
+            }
+            Ok(RelayResponse {
+                maybe_payload: Some(payload),
+                extensions,
+            })
+        }
         Err(err) => {
             error!("failed to evaluate UDP host: {err}");
             Err(io::Error::other("proxy error"))
@@ -913,6 +1012,7 @@ mod tests {
     use crate::runtime::ConfigState;
     use crate::state::NetworkProxyConstraints;
     use crate::state::build_config_state;
+    use crate::state::network_proxy_state_for_policy;
     use pretty_assertions::assert_eq;
     use rama_core::extensions::Extensions;
     use rama_core::extensions::ExtensionsMut;
@@ -928,6 +1028,180 @@ mod tests {
     // Managed MITM CA files live under the shared test CODEX_HOME, so MITM-enabled config state
     // must be materialized one test at a time.
     static MITM_CONFIG_STATE_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn required_proxy_never_overrides_executor_mandatory_tcp_upstream() {
+        if crate::upstream::run_required_proxy_test_in_child(
+            "socks5::tests::required_proxy_never_overrides_executor_mandatory_tcp_upstream",
+        ) {
+            return;
+        }
+        let required_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let executor_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        for listener in [&required_listener, &executor_listener, &origin_listener] {
+            listener.set_nonblocking(true).unwrap();
+        }
+        codex_required_proxy::install(
+            codex_required_proxy::RequiredProxy::new(
+                &format!(
+                    "http://user:secret@{}",
+                    required_listener.local_addr().unwrap()
+                ),
+                &["direct.example".into()],
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let mut state = network_proxy_state_for_policy(NetworkProxyConfig {
+            mode: NetworkMode::Full,
+            allow_local_binding: Some(true),
+            ..Default::default()
+        });
+        state.set_tcp_upstream_proxy(
+            executor_listener
+                .local_addr()
+                .unwrap()
+                .to_string()
+                .parse()
+                .unwrap(),
+        );
+        let state = Arc::new(state);
+        for target in [
+            HostWithPort::from(origin_listener.local_addr().unwrap()),
+            "direct.example:5432".parse().unwrap(),
+            "required.example:5432".parse().unwrap(),
+        ] {
+            let error = connect_opaque_tcp(state.clone(), TcpRequest::new(target))
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("incompatible with the executor's mandatory TCP upstream")
+            );
+        }
+        for listener in [&required_listener, &executor_listener, &origin_listener] {
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn required_proxy_covers_socks_tcp_and_refuses_unproxyable_udp() {
+        if crate::upstream::run_required_proxy_test_in_child(
+            "socks5::tests::required_proxy_covers_socks_tcp_and_refuses_unproxyable_udp",
+        ) {
+            return;
+        }
+        use codex_required_proxy::RequiredProxy;
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let required = RequiredProxy::new(
+            &format!("http://user:secret@{}", proxy.local_addr().unwrap()),
+            &[],
+        )
+        .unwrap();
+        codex_required_proxy::install(required, None).unwrap();
+        let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
+            mode: NetworkMode::Full,
+            allow_upstream_proxy: true,
+            allow_local_binding: Some(true),
+            ..Default::default()
+        }));
+        let target: HostWithPort = "db.invalid:5432".parse().unwrap();
+        let caller = async {
+            let connection = connect_opaque_tcp(state.clone(), TcpRequest::new(target.clone()))
+                .await
+                .unwrap();
+            assert!(matches!(
+                connection.conn,
+                Socks5TcpConnection::RequiredProxy(_)
+            ));
+            let mut tunnel = connection.conn;
+            let mut greeting = [0; 5];
+            tunnel.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(&greeting, b"hello");
+            tunnel.write_all(b"private").await.unwrap();
+            tunnel.shutdown().await.unwrap();
+        };
+        let peer = async {
+            let (mut stream, _) = proxy.accept().await.unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                assert!(head.len() < 16_384);
+                head.push(stream.read_u8().await.unwrap());
+            }
+            let head = String::from_utf8(head).unwrap();
+            assert!(head.starts_with("CONNECT db.invalid:5432 HTTP/1.1\r\n"));
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains("proxy-authorization: basic dxnlcjpzzwnyzxq=\r\n")
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nhello")
+                .await
+                .unwrap();
+            let mut payload = Vec::new();
+            stream.read_to_end(&mut payload).await.unwrap();
+            assert_eq!(payload, b"private");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(caller, peer);
+        })
+        .await
+        .unwrap();
+
+        let origin = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let origin_target = HostWithPort::from(origin.local_addr().unwrap());
+        let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
+            mode: NetworkMode::Full,
+            allow_upstream_proxy: false,
+            allow_local_binding: Some(true),
+            ..Default::default()
+        }));
+        let error = connect_opaque_tcp(state.clone(), TcpRequest::new(origin_target))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("disabled by network policy"));
+        assert!(!error.to_string().contains("secret"));
+        assert_eq!(
+            origin.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+
+        let mut config = NetworkProxyConfig {
+            mode: NetworkMode::Full,
+            allow_local_binding: Some(true),
+            ..Default::default()
+        };
+        config.set_allowed_domains(vec!["1.1.1.1".into(), "127.0.0.1".into()]);
+        let state = Arc::new(network_proxy_state_for_policy(config));
+        for (ip, permitted) in [("1.1.1.1", false), ("127.0.0.1", true)] {
+            let result = inspect_socks5_udp(
+                RelayRequest {
+                    server_address: SocketAddress::new(ip.parse().unwrap(), 53),
+                    payload: b"private".to_vec().into(),
+                    extensions: Extensions::new(),
+                    direction: RelayDirection::North,
+                },
+                state.clone(),
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(result.is_ok(), permitted, "{ip}");
+            if !permitted {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            }
+        }
+    }
 
     #[derive(Clone)]
     struct StaticReloader {

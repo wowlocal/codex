@@ -41,6 +41,19 @@ impl RemoteThreadConfigLoader {
     async fn client(
         &self,
     ) -> Result<ThreadConfigLoaderClient<tonic::transport::Channel>, ThreadConfigLoadError> {
+        if let Some(required) = codex_required_proxy::current() {
+            let direct = url::Url::parse(&self.endpoint)
+                .ok()
+                .and_then(|endpoint| endpoint.host_str().map(ToString::to_string))
+                .is_some_and(|host| required.bypasses_host(&host));
+            if !direct {
+                return Err(ThreadConfigLoadError::new(
+                    ThreadConfigLoadErrorCode::RequestFailed,
+                    None,
+                    "remote thread-config gRPC cannot honor the required proxy".to_string(),
+                ));
+            }
+        }
         ThreadConfigLoaderClient::connect(self.endpoint.clone())
             .await
             .map_err(|err| {

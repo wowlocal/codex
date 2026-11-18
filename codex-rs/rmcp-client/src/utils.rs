@@ -36,10 +36,6 @@ pub(crate) fn create_env_for_mcp_server(
         env.retain(|key, _| !key.to_string_lossy().eq_ignore_ascii_case(name));
         env.insert(OsString::from(name), value);
     }
-    // Fork: MCP servers reach the network through Codex's loopback proxy, never directly.
-    for (name, value) in codex_required_proxy::command_proxy_env(/*thread_id*/ None) {
-        env.insert(OsString::from(name), OsString::from(value));
-    }
     for (name, value) in extra_env.unwrap_or_default() {
         if cfg!(windows)
             || name.to_str().is_some_and(|name| {
@@ -59,7 +55,28 @@ pub(crate) fn create_env_for_mcp_server(
         name.to_str()
             .is_none_or(|name| !is_non_inheritable_env_var(name))
     });
+    // Apply the credential-free gateway after config overrides, including mixed-case keys
+    // on Windows. MCP config must not replace the mandatory proxy or its NO_PROXY policy.
+    apply_command_proxy_env(
+        &mut env,
+        codex_required_proxy::command_proxy_env_checked(None)?,
+    );
     Ok(env)
+}
+
+fn apply_command_proxy_env(
+    env: &mut HashMap<OsString, OsString>,
+    proxy_env: Vec<(String, String)>,
+) {
+    if proxy_env.is_empty() {
+        return;
+    }
+    env.retain(|name, _| !codex_required_proxy::is_command_proxy_env_key(&name.to_string_lossy()));
+    env.extend(
+        proxy_env
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into())),
+    );
 }
 
 pub(crate) fn create_env_overlay_for_remote_mcp_server(
@@ -220,6 +237,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mandatory_proxy_overrides_config_with_case_insensitive_keys() {
+        let mut env = HashMap::from([
+            (
+                OsString::from("hTtPs_PrOxY"),
+                OsString::from("http://user:secret@outside.invalid"),
+            ),
+            (OsString::from("No_PrOxY"), OsString::from("*")),
+            (OsString::from("node_use_env_proxy"), OsString::from("0")),
+            (OsString::from("TZ"), OsString::from("UTC")),
+            (
+                OsString::from("pip_proxy"),
+                OsString::from("http://outside.invalid"),
+            ),
+            (OsString::from("npm_config_proxy"), OsString::from("")),
+        ]);
+        apply_command_proxy_env(
+            &mut env,
+            vec![
+                ("HTTPS_PROXY".into(), "http://codex@127.0.0.1:1234".into()),
+                ("NO_PROXY".into(), "localhost,127.0.0.1,::1".into()),
+                ("NODE_USE_ENV_PROXY".into(), "1".into()),
+                ("PIP_PROXY".into(), "http://codex@127.0.0.1:1234".into()),
+                (
+                    "NPM_CONFIG_PROXY".into(),
+                    "http://codex@127.0.0.1:1234".into(),
+                ),
+            ],
+        );
+        assert_eq!(
+            env.get(OsStr::new("HTTPS_PROXY")),
+            Some(&OsString::from("http://codex@127.0.0.1:1234"))
+        );
+        assert_eq!(
+            env.get(OsStr::new("NO_PROXY")),
+            Some(&OsString::from("localhost,127.0.0.1,::1"))
+        );
+        assert!(!env.contains_key(OsStr::new("hTtPs_PrOxY")));
+        assert!(!env.contains_key(OsStr::new("node_use_env_proxy")));
+        assert!(!env.contains_key(OsStr::new("pip_proxy")));
+        assert!(!env.contains_key(OsStr::new("npm_config_proxy")));
+        assert_eq!(
+            env.get(OsStr::new("PIP_PROXY")),
+            Some(&OsString::from("http://codex@127.0.0.1:1234"))
+        );
+        assert_eq!(
+            env.get(OsStr::new("NPM_CONFIG_PROXY")),
+            Some(&OsString::from("http://codex@127.0.0.1:1234"))
+        );
+        assert_eq!(env.get(OsStr::new("TZ")), Some(&OsString::from("UTC")));
     }
 
     #[tokio::test]

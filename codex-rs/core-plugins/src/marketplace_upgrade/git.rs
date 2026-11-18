@@ -26,6 +26,7 @@ pub(super) fn git_remote_revision(
     let _trusted_repository = matches!(mode, PluginGitMode::Automatic)
         .then(|| crate::configure_trusted_git_repository(&mut command, codex_home))
         .transpose()?;
+    crate::git_policy::configure_git_remote(&mut command, source)?;
     let output = run_git_command_with_timeout(
         command.arg("ls-remote").arg(source).arg(ref_name),
         "git ls-remote marketplace source",
@@ -145,6 +146,7 @@ fn clone_git_source(
     let _trusted_repository = matches!(mode, PluginGitMode::Automatic)
         .then(|| crate::configure_trusted_git_repository(&mut command, codex_home))
         .transpose()?;
+    crate::git_policy::configure_git_remote(&mut command, source)?;
     if let Some(reference) = reference {
         // Git normally enumerates all refs in the alternate, including private local branches.
         // Seed negotiation from the installed commit. The shell builtin `:` consumes the
@@ -185,12 +187,11 @@ pub(super) fn checkout_git_source(
     let checkout_ref = if sparse_paths.is_empty() {
         ref_name
     } else {
+        let mut command = git_command(mode);
+        command.arg("-C").arg(&destination);
+        crate::git_policy::configure_git_repository_origin(&mut command)?;
         let output = run_git_command_with_timeout(
-            git_command(mode)
-                .arg("-C")
-                .arg(&destination)
-                .args(["sparse-checkout", "set"])
-                .args(sparse_paths),
+            command.args(["sparse-checkout", "set"]).args(sparse_paths),
             "git sparse-checkout marketplace source",
             timeout,
         )?;
@@ -198,12 +199,11 @@ pub(super) fn checkout_git_source(
         Some(ref_name.unwrap_or("HEAD"))
     };
     if let Some(checkout_ref) = checkout_ref {
+        let mut command = git_command(mode);
+        command.arg("-C").arg(&destination);
+        crate::git_policy::configure_git_repository_origin(&mut command)?;
         let output = run_git_command_with_timeout(
-            git_command(mode)
-                .arg("-C")
-                .arg(&destination)
-                .arg("checkout")
-                .arg(checkout_ref),
+            command.arg("checkout").arg(checkout_ref),
             "git checkout marketplace ref",
             timeout,
         )?;

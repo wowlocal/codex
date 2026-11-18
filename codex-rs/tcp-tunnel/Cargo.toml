@@ -8,6 +8,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+codex-required-proxy = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }

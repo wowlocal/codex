@@ -37,6 +37,8 @@ static COMMAND_PROXY: OnceLock<SocketAddr> = OnceLock::new();
 pub const CODEX_IDENTITY: &str = "codex";
 /// Proxy username prefix for agent commands, followed by their thread ID.
 pub const THREAD_IDENTITY_PREFIX: &str = "thread-";
+/// Local helper handoff. This contains only a numeric loopback address, never upstream credentials.
+pub const COMMAND_PROXY_ENV: &str = "CODEX_FORK_COMMAND_PROXY_V1";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RequiredProxyError {
@@ -51,6 +53,14 @@ pub enum RequiredProxyError {
     AlreadyInstalled,
     #[error("the command proxy was already published")]
     CommandProxyAlreadySet,
+    #[error("the required command proxy is unavailable; refusing an unproxied subprocess")]
+    CommandProxyUnavailable,
+    #[error("the parent command proxy must be a numeric loopback address with a nonzero port")]
+    InvalidCommandProxy,
+    #[error(
+        "this standalone helper has no required proxy boundary; launch it through the Codex CLI"
+    )]
+    MissingHelperBoundary,
 }
 
 /// A validated upstream proxy and the destinations that bypass it.
@@ -214,17 +224,43 @@ pub fn current() -> Option<Arc<RequiredProxy>> {
 
 /// Publishes the loopback proxy that programs started by Codex use. Call once.
 pub fn set_command_proxy(address: SocketAddr) -> Result<(), RequiredProxyError> {
+    if !address.ip().is_loopback() || address.port() == 0 {
+        return Err(RequiredProxyError::InvalidCommandProxy);
+    }
     COMMAND_PROXY
         .set(address)
         .map_err(|_| RequiredProxyError::CommandProxyAlreadySet)
 }
+
+const COMMAND_PROXY_URL_KEYS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "FTP_PROXY",
+    "WS_PROXY",
+    "WSS_PROXY",
+    "GRPC_PROXY",
+    "PIP_PROXY",
+    "NPM_CONFIG_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "YARN_PROXY",
+    "YARN_HTTP_PROXY",
+    "YARN_HTTPS_PROXY",
+    "GLOBAL_AGENT_HTTP_PROXY",
+    "GLOBAL_AGENT_HTTPS_PROXY",
+];
+const COMMAND_NO_PROXY_KEYS: &[&str] = &["NO_PROXY", "GLOBAL_AGENT_NO_PROXY", "NPM_CONFIG_NOPROXY"];
 
 /// Proxy environment for a program started by Codex, or nothing without a command proxy.
 ///
 /// Agent commands pass their thread ID so the agent can adjust that thread's routing; other
 /// programs, such as MCP servers, get Codex's fixed routing. The URLs carry no credentials.
 pub fn command_proxy_env(thread_id: Option<&str>) -> Vec<(String, String)> {
-    let Some(address) = COMMAND_PROXY.get() else {
+    let address = COMMAND_PROXY.get().copied().or_else(|| {
+        // Legacy callers cannot return an error. An unavailable gateway must still fail closed.
+        is_active().then_some(SocketAddr::from(([127, 0, 0, 1], 0)))
+    });
+    let Some(address) = address else {
         return Vec::new();
     };
     let identity = match thread_id {
@@ -233,22 +269,85 @@ pub fn command_proxy_env(thread_id: Option<&str>) -> Vec<(String, String)> {
     };
     let url = format!("http://{identity}@{address}");
     let no_proxy = IMPLICIT_DIRECT.join(",");
-    let mut env: Vec<(String, String)> = [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ]
-    .into_iter()
-    .map(|key| (key.to_string(), url.clone()))
-    .collect();
-    env.push(("NO_PROXY".to_string(), no_proxy.clone()));
-    env.push(("no_proxy".to_string(), no_proxy));
+    let mut env: Vec<(String, String)> = Vec::new();
+    for key in COMMAND_PROXY_URL_KEYS {
+        env.push((key.to_string(), url.clone()));
+        env.push((key.to_ascii_lowercase(), url.clone()));
+    }
+    for key in COMMAND_NO_PROXY_KEYS {
+        env.push((key.to_string(), no_proxy.clone()));
+        env.push((key.to_ascii_lowercase(), no_proxy.clone()));
+    }
     // Node.js clients honor proxy variables only when this is set.
     env.push(("NODE_USE_ENV_PROXY".to_string(), "1".to_string()));
+    if is_active() {
+        env.push((COMMAND_PROXY_ENV.to_string(), address.to_string()));
+    }
     env
+}
+
+/// Proxy boundary for Codex-owned subprocesses that can report startup errors.
+pub fn command_proxy_env_checked(
+    thread_id: Option<&str>,
+) -> Result<Vec<(String, String)>, RequiredProxyError> {
+    if is_active() && COMMAND_PROXY.get().is_none() {
+        return Err(RequiredProxyError::CommandProxyUnavailable);
+    }
+    Ok(command_proxy_env(thread_id))
+}
+
+/// Environment keys owned by the command-proxy boundary, case-insensitively on every platform.
+pub fn is_command_proxy_env_key(name: &str) -> bool {
+    COMMAND_PROXY_URL_KEYS
+        .iter()
+        .chain(COMMAND_NO_PROXY_KEYS)
+        .copied()
+        .chain(["NODE_USE_ENV_PROXY", COMMAND_PROXY_ENV])
+        .any(|key| name.eq_ignore_ascii_case(key))
+}
+
+/// Adopt a local parent's credential-free gateway without reading its Keychain item.
+pub fn bootstrap_local_helper_from_env() -> Result<bool, RequiredProxyError> {
+    if is_active() {
+        return Ok(true);
+    }
+    let Some(value) = std::env::var_os(COMMAND_PROXY_ENV) else {
+        return Ok(false);
+    };
+    let address: SocketAddr = value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .filter(|address: &SocketAddr| address.ip().is_loopback() && address.port() != 0)
+        .ok_or(RequiredProxyError::InvalidCommandProxy)?;
+    if COMMAND_PROXY
+        .get()
+        .is_some_and(|current| *current != address)
+    {
+        return Err(RequiredProxyError::CommandProxyAlreadySet);
+    }
+    install(
+        RequiredProxy::new(&format!("http://{CODEX_IDENTITY}@{address}"), &[])?,
+        None,
+    )?;
+    if COMMAND_PROXY.get().is_none() {
+        set_command_proxy(address)?;
+    }
+    Ok(true)
+}
+
+/// Release helper entrypoints may delegate to a local parent, never silently select direct.
+pub fn require_local_helper_proxy() -> Result<(), RequiredProxyError> {
+    if bootstrap_local_helper_from_env()? {
+        return Ok(());
+    }
+    let enabled = |key| std::env::var_os(key).is_some_and(|value| value == "1");
+    if enabled("CODEX_FORK_DANGEROUSLY_ALLOW_DIRECT")
+        || (cfg!(debug_assertions) && !enabled("CODEX_FORK_REQUIRE_PROXY"))
+    {
+        Ok(())
+    } else {
+        Err(RequiredProxyError::MissingHelperBoundary)
+    }
 }
 
 /// Validates a proxy URL and returns its canonical form.

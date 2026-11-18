@@ -2,10 +2,12 @@
 //! The fork's required proxy replaces environment discovery for every route, including legacy
 //! transport-default clients. This binary holds a single test because the proxy is process-wide.
 
+use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::OutboundProxyRoute;
+use codex_http_client::RouteAwareClientPool;
 use codex_required_proxy::RequiredProxy;
 use pretty_assertions::assert_eq;
 use std::io::Read;
@@ -41,33 +43,58 @@ async fn required_proxy_routes_resolved_and_legacy_clients() {
     }
 
     let proxy = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept");
-        let mut request = [0u8; 1024];
-        let read = stream.read(&mut request).expect("read request");
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
-            .expect("write response");
-        String::from_utf8_lossy(&request[..read]).to_ascii_lowercase()
+        let mut requests = Vec::new();
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .expect("write response");
+            requests.push(String::from_utf8_lossy(&request[..read]).to_ascii_lowercase());
+        }
+        requests
     });
-    // `.invalid` cannot resolve, so only the proxy can answer this request.
+    // `.invalid` cannot resolve, so every constructor must use the required proxy.
     #[allow(deprecated)]
-    let client = HttpClientBuilder::new()
-        .build_with_transport_default_proxy()
-        .expect("legacy client");
-    let body = client
-        .get("http://codex-required-proxy.invalid/probe")
-        .send()
-        .await
-        .expect("request through the required proxy")
-        .text()
-        .await
-        .expect("body");
-    assert_eq!(body, "ok");
-    let request = proxy.join().expect("proxy thread");
-    assert!(
-        request.starts_with("get http://codex-required-proxy.invalid/probe http/1.1\r\n"),
-        "{request}"
-    );
-    // Basic base64("user:secret"), lowercased with the rest of the request.
-    assert!(request.contains("proxy-authorization: basic dxnlcjpzzwnyzxq=\r\n"));
+    let clients = [
+        HttpClientBuilder::new()
+            .build_with_transport_default_proxy()
+            .expect("legacy client"),
+        HttpClientBuilder::new()
+            .build_direct()
+            .expect("exceptional direct client"),
+        HttpClientBuilder::new().build_direct_with_custom_ca_fallback(),
+        RouteAwareClientPool::new(
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            ClientRouteClass::Auth,
+        )
+        .with_direct_proxy()
+        .into_client(),
+        RouteAwareClientPool::new(
+            HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            ClientRouteClass::Auth,
+        )
+        .with_legacy_direct_proxy_and_custom_ca_fallback()
+        .into_client(),
+    ];
+    for client in clients {
+        let body = client
+            .get("http://codex-required-proxy.invalid/probe")
+            .send()
+            .await
+            .expect("request through the required proxy")
+            .text()
+            .await
+            .expect("body");
+        assert_eq!(body, "ok");
+    }
+    for request in proxy.join().expect("proxy thread") {
+        assert!(
+            request.starts_with("get http://codex-required-proxy.invalid/probe http/1.1\r\n"),
+            "{request}"
+        );
+        // Basic base64("user:secret"), lowercased with the rest of the request.
+        assert!(request.contains("proxy-authorization: basic dxnlcjpzzwnyzxq=\r\n"));
+    }
 }

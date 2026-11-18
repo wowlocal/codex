@@ -579,6 +579,14 @@ async fn run_installer_script(
     package_root: &Path,
     #[cfg(unix)] terminate: impl std::future::Future<Output = Option<()>>,
 ) -> Result<UpdateLoopControl> {
+    let proxy_env = codex_required_proxy::command_proxy_env_checked(None)?;
+    // Windows PowerShell's downloader does not reliably honor HTTP(S)_PROXY. Do not
+    // launch its nested installer requests until they support an explicit proxy.
+    #[cfg(windows)]
+    anyhow::ensure!(
+        !codex_required_proxy::is_active(),
+        "the Windows standalone installer cannot enforce the required proxy"
+    );
     #[cfg(unix)]
     let mut command = {
         let mut command = Command::new("/bin/sh");
@@ -600,6 +608,7 @@ async fn run_installer_script(
         InstallerMode::Migration => ("0", "0", "", "1"),
     };
     let mut child = command
+        .envs(proxy_env)
         .env(
             "CODEX_HOME",
             package_root

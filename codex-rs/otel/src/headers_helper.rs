@@ -146,6 +146,9 @@ async fn run_helper(command: &str, cwd: &Path) -> HeaderResult {
         }
     };
     process.current_dir(cwd);
+    process.envs(
+        codex_required_proxy::command_proxy_env_checked(None).map_err(|error| error.to_string())?,
+    );
     codex_http_headers_helper::run(process)
         .await
         .map_err(|err| err.to_string())

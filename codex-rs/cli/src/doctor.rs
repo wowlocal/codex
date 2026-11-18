@@ -2578,6 +2578,9 @@ fn auth_mode_name(auth: &CodexAuth) -> &'static str {
 }
 
 async fn dns_address_family_details(host: &str, port: u16) -> Vec<String> {
+    if codex_required_proxy::current().is_some_and(|required| !required.bypasses_host(host)) {
+        return vec!["DNS: local lookup skipped; destination uses the required proxy".to_string()];
+    }
     match tokio::net::lookup_host((host, port)).await {
         Ok(addresses) => {
             let addresses = addresses.collect::<Vec<_>>();
@@ -4695,5 +4698,42 @@ mod tests {
             color_output_summary(&inputs),
             "disabled (stdout is not a terminal)"
         );
+    }
+}
+
+#[cfg(test)]
+mod required_proxy_dns_tests {
+    #[test]
+    fn proxied_diagnostics_skip_direct_origin_dns() -> anyhow::Result<()> {
+        const CHILD: &str = "CODEX_TEST_DOCTOR_REQUIRED_DNS";
+        if std::env::var_os(CHILD).is_some() {
+            codex_required_proxy::install(
+                codex_required_proxy::RequiredProxy::new("http://fixture.invalid:3128", &[])?,
+                None,
+            )?;
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(super::dns_address_family_details("0.0.0.0", 80));
+            assert_eq!(
+                result,
+                ["DNS: local lookup skipped; destination uses the required proxy"]
+            );
+            return Ok(());
+        }
+        let result = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "doctor::required_proxy_dns_tests::proxied_diagnostics_skip_direct_origin_dns",
+            ])
+            .env(CHILD, "1")
+            .output()?;
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        Ok(())
     }
 }

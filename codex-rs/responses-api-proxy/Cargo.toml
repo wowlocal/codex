@@ -21,6 +21,7 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 codex-http-client = { workspace = true }
+codex-required-proxy = { workspace = true }
 codex-process-hardening = { workspace = true }
 ctor = { workspace = true }
 http = { workspace = true }

@@ -595,19 +595,18 @@ pub(crate) fn configure_builder_for_resolved_route(
     route_class: ClientRouteClass,
     route: &OutboundProxyRoute,
 ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
+    if matches!(route, OutboundProxyRoute::Unavailable) {
+        return Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class });
+    }
+    // A route selected for exceptional upstream behavior cannot override the fork's
+    // required proxy. The matcher alone owns explicit-direct and loopback exceptions.
+    if codex_required_proxy::is_active() {
+        return Ok(builder.no_proxy().proxy(required_reqwest_proxy()));
+    }
     match route {
-        OutboundProxyRoute::Unavailable => {
-            Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class })
-        }
-        OutboundProxyRoute::TransportDefault if codex_required_proxy::is_active() => {
-            Ok(builder.proxy(required_reqwest_proxy()))
-        }
+        OutboundProxyRoute::Unavailable => unreachable!("handled above"),
         OutboundProxyRoute::TransportDefault => Ok(builder),
         OutboundProxyRoute::Direct => Ok(builder.no_proxy()),
-        // Clients outlive proxy reloads, so they ask for the current required proxy per request.
-        OutboundProxyRoute::Proxy { .. } if codex_required_proxy::is_active() => {
-            Ok(builder.proxy(required_reqwest_proxy()))
-        }
         OutboundProxyRoute::Proxy { url, no_proxy } => {
             let no_proxy = no_proxy.as_deref().and_then(reqwest::NoProxy::from_string);
             configure_concrete_proxy(builder, route_class, url, no_proxy)

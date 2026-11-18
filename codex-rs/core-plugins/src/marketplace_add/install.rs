@@ -105,14 +105,22 @@ pub(super) fn replace_marketplace_root(
 }
 
 fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), MarketplaceAddError> {
-    let mut command = codex_utils_process::background_command("git");
-    command
-        .args(["-c", codex_git_utils::SAFE_BARE_REPOSITORY_CONFIG])
-        .args(args);
-    command.env("GIT_TERMINAL_PROMPT", "0");
+    let mut command = crate::PluginGitMode::Manual.command(Path::new("git"));
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    if args.first() == Some(&"clone") {
+        let source = args.get(args.len().saturating_sub(2)).ok_or_else(|| {
+            MarketplaceAddError::InvalidRequest("missing Git marketplace source".to_string())
+        })?;
+        crate::git_policy::configure_git_remote(&mut command, source)
+            .map_err(MarketplaceAddError::InvalidRequest)?;
+    } else if matches!(args.first().copied(), Some("checkout" | "sparse-checkout")) {
+        crate::git_policy::configure_git_repository_origin(&mut command)
+            .map_err(MarketplaceAddError::InvalidRequest)?;
+    }
+    command.args(args);
+    command.env("GIT_TERMINAL_PROMPT", "0");
 
     let output = command.output().map_err(|err| {
         MarketplaceAddError::Internal(format!("failed to run git {}: {err}", args.join(" ")))

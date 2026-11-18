@@ -2,7 +2,7 @@
 source: cli/tests/doctor_enterprise_network.rs
 expression: stdout
 ---
-Codex Doctor v0.169.0-fork.1
+Codex Doctor v0.170.0-fork.1
 
 Notes
    [XX] config       config could not be loaded - Fix the reported config error, then rerun codex doctor.

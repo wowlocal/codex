@@ -902,12 +902,37 @@ fn stdio_command_process(stdio_command: &StdioExecServerCommand) -> Command {
     command.args(&stdio_command.args);
     command.envs(&stdio_command.env);
     scrub_non_inheritable_env_vars(command.as_std_mut());
+    // Only a local packaged executor can adopt this machine's loopback gateway.
+    // Custom SSH/remote stdio commands must not receive a gateway from another host.
+    if std::env::current_exe()
+        .ok()
+        .is_some_and(|current| is_packaged_local_executor(&stdio_command.program, &current))
+    {
+        command.envs(codex_required_proxy::command_proxy_env(None));
+    } else {
+        command.env_remove(codex_required_proxy::COMMAND_PROXY_ENV);
+    }
     if let Some(cwd) = &stdio_command.cwd {
         command.current_dir(cwd);
     }
     #[cfg(unix)]
     command.process_group(0);
     command
+}
+
+fn is_packaged_local_executor(program: &str, current_executable: &std::path::Path) -> bool {
+    let program = std::path::Path::new(program);
+    if !program.is_absolute() {
+        return false;
+    }
+    let Some(bin_dir) = current_executable.parent() else {
+        return false;
+    };
+    let expected = bin_dir.join(format!("codex-exec-server{}", std::env::consts::EXE_SUFFIX));
+    match (program.canonicalize(), expected.canonicalize()) {
+        (Ok(program), Ok(expected)) => program == expected,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -41,19 +41,21 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_transport::WEBSOCKET_COMPRESSION_HEADER;
 use codex_app_server_transport::ZSTD_STREAM_PROTOCOL;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_uds::UnixStream;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+use codex_websocket_client::WebSocketConnection;
+use codex_websocket_client::WebSocketConnector;
+use futures::Sink;
+use futures::Stream;
 use serde::de::DeserializeOwned;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::client_async_with_config;
-use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -272,7 +274,11 @@ impl RemoteAppServerClient {
         initialize_params: InitializeParams,
     ) -> IoResult<Self>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: Stream<Item = Result<Message, TungsteniteError>>
+            + Sink<Message, Error = TungsteniteError>
+            + Unpin
+            + Send
+            + 'static,
     {
         let mut stream =
             RemoteWebSocket::from_handshake(stream, REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)?;
@@ -749,7 +755,7 @@ impl RemoteAppServerRequestHandle {
 async fn connect_websocket_endpoint(
     websocket_url: String,
     auth_token: Option<String>,
-) -> IoResult<(String, WebSocketHandshake<MaybeTlsStream<TcpStream>>)> {
+) -> IoResult<(String, WebSocketHandshake<WebSocketConnection>)> {
     let url = Url::parse(&websocket_url).map_err(|err| {
         IoError::new(
             ErrorKind::InvalidInput,
@@ -783,15 +789,26 @@ async fn connect_websocket_endpoint(
     }
 
     ensure_rustls_crypto_provider();
+    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+    let connector = WebSocketConnector::new(&factory).map_err(IoError::other)?;
     let websocket_config = remote_websocket_config();
-    let stream = timeout(
-        CONNECT_TIMEOUT,
-        connect_async_with_config(
-            request,
-            Some(websocket_config),
-            /*disable_nagle*/ false,
-        ),
-    )
+    // Local app-server IPC remains direct; external endpoints use the mandatory policy.
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    let stream = timeout(CONNECT_TIMEOUT, async {
+        if loopback {
+            connector
+                .connect_loopback_direct(request, websocket_config)
+                .await
+        } else {
+            connector.connect(request, websocket_config).await
+        }
+    })
     .await
     .map_err(|_| {
         IoError::new(
@@ -811,7 +828,7 @@ async fn connect_websocket_endpoint(
 async fn connect_unix_socket_endpoint(
     socket_path: AbsolutePathBuf,
     peer_policy: SocketPeerPolicy,
-) -> IoResult<(String, WebSocketHandshake<UnixStream>)> {
+) -> IoResult<(String, WebSocketHandshake<WebSocketStream<UnixStream>>)> {
     let endpoint = format!("unix://{}", socket_path.display());
     let request = websocket_request(UDS_WEBSOCKET_HANDSHAKE_URL).map_err(|err| {
         IoError::new(
@@ -880,7 +897,9 @@ async fn initialize_remote_connection<S>(
     initialize_timeout: Duration,
 ) -> IoResult<(Vec<AppServerEvent>, RemoteServerMetadata)>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: Stream<Item = Result<Message, TungsteniteError>>
+        + Sink<Message, Error = TungsteniteError>
+        + Unpin,
 {
     let initialize_request_id = RequestId::String("initialize".to_string());
     let mut pending_events = Vec::new();
@@ -1070,7 +1089,9 @@ async fn write_jsonrpc_message<S>(
     endpoint: &str,
 ) -> IoResult<()>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: Stream<Item = Result<Message, TungsteniteError>>
+        + Sink<Message, Error = TungsteniteError>
+        + Unpin,
 {
     let payload = serde_json::to_string(&message).map_err(IoError::other)?;
     stream.send_text(payload).await.map_err(|err| {
@@ -1131,3 +1152,7 @@ mod tests {
             .expect("an in-flight event must not abort the worker during shutdown");
     }
 }
+
+#[cfg(test)]
+#[path = "remote_proxy_tests.rs"]
+mod proxy_tests;

@@ -58,6 +58,7 @@ use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::prepare_codex_apps_tools_for_model;
 use crate::rmcp_client::prepare_regular_mcp_tools_for_model;
+use crate::rmcp_client::strip_mcp_app_resource_metadata_from_tools;
 use crate::runtime::McpPublicationGate;
 use crate::runtime::McpRuntimeInput;
 use crate::runtime::McpStartupPolicy;
@@ -295,7 +296,11 @@ impl McpServerView {
                     self.catalog_item_limit,
                     client.server_instructions.as_deref(),
                 );
-                client.with_active_shared_lease(relist.boxed()).await?
+                let (mut tools, meta) = client.with_active_shared_lease(relist.boxed()).await??;
+                if !client.mcp_apps_negotiated {
+                    strip_mcp_app_resource_metadata_from_tools(&mut tools);
+                }
+                Ok((tools, meta))
             })
             .await;
         if result.is_err() {

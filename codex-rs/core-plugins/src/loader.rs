@@ -1875,7 +1875,6 @@ fn run_git_output(
     mode: PluginGitMode,
 ) -> Result<String, String> {
     let mut command = mode.command(Path::new("git"));
-    command.args(args);
     command.env("GIT_TERMINAL_PROMPT", "0");
     let _trusted_repository = if let Some(cwd) = cwd
         && args.first() == Some(&"clone")
@@ -1891,7 +1890,16 @@ fn run_git_output(
         None
     };
 
+    if args.first() == Some(&"clone") {
+        let source = args
+            .get(args.len().saturating_sub(2))
+            .ok_or_else(|| "missing Git plugin source".to_string())?;
+        crate::git_policy::configure_git_remote(&mut command, source)?;
+    } else if matches!(args.first().copied(), Some("checkout" | "sparse-checkout")) {
+        crate::git_policy::configure_git_repository_origin(&mut command)?;
+    }
     let output = command
+        .args(args)
         .output()
         .map_err(|err| format!("failed to run git {}: {err}", args.join(" ")))?;
     if output.status.success() {

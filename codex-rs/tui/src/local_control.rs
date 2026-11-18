@@ -285,7 +285,8 @@ impl LocalControl {
             | AppServerEvent::Lagged { .. } => {
                 self.finish(request.request_id, json!({"error":"confirmation stream unavailable; read current settings","uncertain":true}));
             }
-            AppServerEvent::ServerRequest(_) => (),
+            // Restoring a stream does not confirm any settings mutation.
+            AppServerEvent::ServerRequest(_) | AppServerEvent::ThreadStreamReconnected(_) => (),
         }
     }
 }

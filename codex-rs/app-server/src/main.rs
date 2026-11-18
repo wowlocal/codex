@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
             remote_control,
             managed_daemon,
         } = AppServerArgs::parse();
+        codex_required_proxy::require_local_helper_proxy()?;
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
         } else {

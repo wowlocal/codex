@@ -10,15 +10,17 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.169.0`; the fork version is `0.169.0-fork.1`.
-The 2026-11-17 port rebases the previous `0.160.0-fork.1` release (`9a23812a94`)
-onto that stable release. All twenty fork commits are retained. MCP Apps negotiation
-and bounded context, required proxy routing, startup environment loading, and
-BUSY native TUI controls are preserved alongside upstream network-policy enforcement.
+The current base is upstream `rust-v0.170.0`; the fork version is `0.170.0-fork.1`.
+The 2026-11-18 port retains the MCP Apps and BUSY adaptations from the 0.169 candidate
+and all three security/routing commits from the actual previous release,
+`0.163.0-fork.2` (`451a69980f`). It preserves upstream network policy, the Keychain
+proxy kill switch, live reload, credential-free command proxy, per-thread routing,
+and the final agent-thread identity fix.
 
-The port adapts MCP Apps to the new message-admission path and preserves browser
-views separately for each backend. Native settings requests target the displayed
-backend; only that backend's settings events can confirm a pending request.
+MCP Apps context follows start, steer, and cloud admission. Browser views and native
+settings confirmations remain bound to their owning backend. Tool-catalog refresh
+strips resource metadata when MCP Apps was not negotiated, including list-changed
+notifications; app-only tools remain available to the browser.
 
 ## Required upstream proxy
 
@@ -179,7 +181,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.169.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.170.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for
@@ -198,7 +200,7 @@ for TUI checks. A larger machine can explicitly override the build limit with
 `-j N`. These settings limit concurrency and scheduling priority, not the
 memory allocation of a single compiler or linker process.
 
-The0.163.0-fork.2 thread identity fix is retained: unified exec and the exec-server
+The 0.163.0-fork.2 thread identity fix is retained: unified exec and the exec-server
 reapply their command-proxy environment after setting the final `CODEX_THREAD_ID`.
 Agent routing commands use a `thread-<id>` identity, not the Codex client's identity.
 
@@ -221,34 +223,47 @@ Agent routing commands use a `thread-<id>` identity, not the Codex client's iden
 The full workspace suite, the TUI suite, native Linux/Windows checks and a live TUI session
 with a real upstream proxy were not run.
 
-## Port validation (2026-11-17 candidate, superseded)
+## Port and outbound-proxy validation (2026-11-18, macOS Apple Silicon)
 
-This candidate was not released. Its review compared with0.160.0 and missed the
-Keychain/command-proxy changes in0.163.0-fork.2. The full latest-fork inventory
-is being revalidated for0.170.0; the test results below remain historical evidence.
+- Rebased onto stable `rust-v0.170.0`, retaining the latest released fork's
+  `451a69980f` Keychain, command-gateway and final thread-identity changes, plus
+  MCP Apps and BUSY protocol-v1 adaptations.
+- Independent source review compared the actual previous release and audited HTTP,
+  Responses, login, analytics/Sentry, OTLP logs/traces/metrics, WebSocket, managed
+  HTTP/CONNECT/SOCKS/MITM, MCP, Git, downloads, helpers, DNS diagnostics and QUIC.
+  All reported blocking findings were fixed and the final diff was approved.
+- Closed SDK/default-client and exceptional-Direct bypasses. Required proxy selection
+  is authoritative; unsupported gRPC/QUIC routes refuse before direct networking.
+  Proxy TLS precedes authentication; proxy credentials never enter an HTTPS origin
+  request. Managed routes preserve destination policy and native/custom CA trust.
+- Child environments use a credential-free gateway, including common client aliases;
+  MCP overrides, dotenv and Git rewrites/promisor remotes cannot silently replace it.
+  Standalone network helpers require a valid local parent gateway in strict mode.
+- The scoped 24-package run executed 10,345 tests: 10,341 passed initially, including
+  three retry successes. The four failures were fixed (HTTP proxy auth, a SOCKS
+  fixture, and the source-build executor-version expectation); all 424 selected
+  rechecks passed. The full workspace suite was not run.
+- All 35 mocked BUSY client/model-menu/effort tests passed. Clippy checked the affected
+  packages plus standalone app-server/exec with warnings denied. Config schema and
+  Bazel lock regeneration produced no drift.
 
+The traffic guarantee covers the fork's supported transports and children that honor
+proxy configuration. Explicit `[proxy] direct`, localhost/IPC and permitted command
+package destinations remain intentional exceptions. Arbitrary third-party programs
+that ignore proxy settings require an OS firewall for an absolute egress guarantee.
+Managed network profiles keep their own stricter listener policy rather than the
+ordinary command gateway's per-thread routing; hostname connections refuse when
+remote DNS cannot preserve local IP or approval restrictions. No firewall policy or
+live BUSY device was changed for this validation. Native Windows/Linux checks and a
+new live browser MCP Apps A-to-B-to-A end-to-end test were not run.
 
-- Independently reviewed all twenty retained fork commits against the previous
-  release and the intended-feature inventory. No blocking findings were found.
-  MCP Apps negotiation/reconnect/bounded context, proxy fail-closed routing,
-  startup environment loading, and all BUSY protocol v1 controls remain present.
-- Adapted MCP Apps context to start, steer, and cloud admission. Browser messages
-  and native settings confirmations are bound to their backend as well as thread;
-  switching backend invalidates old settings revisions and pending confirmation.
-- Ran 8,314 tests across CLI, TUI, MCP, API, HTTP, WebSocket, network-proxy,
-  telemetry, config, and app-server-client: 8,307 initially passed. Adapted seven
-  diagnostic-fixture/snapshot failures without relaxing startup proxy policy.
-  All 31 selected final rechecks passed, including every initial failure and
-  the new context/backend regressions. Ten tests were skipped in the broad run.
-- The BUSY native-client, effort, and model-menu suites passed all 35 tests.
-- Config schema regeneration and `just bazel-lock-update` produced no drift.
-- Final scoped Clippy completed without warnings. Formatting and artifact checks
-  are recorded with the release evidence.
+## Superseded candidate (2026-11-17)
 
-The full workspace suite and native Windows/Linux checks were not run. Browser
-parking/restoration was reviewed and wrong-backend message rejection is tested;
-there is no new browser end-to-end test of the complete A-to-B-to-A switch cycle.
-Final packaging, signing, and notarization status are recorded with the artifacts.
+The unreleased 0.169.0 candidate ran 8,314 affected tests, with its seven fixture/snapshot
+failures fixed and all 31 selected rechecks passing, plus 35 BUSY client tests. Its
+source review incorrectly compared only with 0.160.0 and missed the subsequent
+Keychain/command-proxy features in 0.163.0-fork.2. It was not published. Those tests
+remain historical evidence, not validation of this 0.170.0 release.
 
 ## Port validation (2026-10-03, macOS Apple Silicon)
 

@@ -84,6 +84,8 @@ pub async fn run_ssh_proxy(
     stdout: impl AsyncWrite + Unpin,
 ) -> Result<()> {
     let (target, headers) = args.ssh_destination()?;
+    // Check before preparing QUIC or polling the account credential.
+    super::ensure_quic_route(codex_required_proxy::current().as_deref(), &target.host)?;
     // Linux can advertise UDP segmentation on paths where batched packets are lost.
     // Single datagrams keep bulk SSH transfers moving on those paths.
     let mut transport = quinn::TransportConfig::default();

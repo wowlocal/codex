@@ -686,3 +686,21 @@ fn diagnostics_flag_is_optional_and_advertised() {
             .contains("--diagnostics-json")
     );
 }
+
+#[test]
+fn required_proxy_blocks_quic_public_endpoint_but_preserves_direct_ipc() {
+    let proxy = codex_required_proxy::RequiredProxy::new(
+        "http://upstream.invalid:8080",
+        &["10.0.0.0/8".to_owned(), "host.internal".to_owned()],
+    )
+    .expect("proxy policy");
+    assert!(super::ensure_quic_route(Some(&proxy), "codex-portals.api.openai.com").is_err());
+    assert!(super::ensure_quic_route(Some(&proxy), "public.invalid").is_err());
+    for host in ["127.0.0.1", "::1", "localhost", "10.1.2.3", "host.internal"] {
+        assert!(
+            super::ensure_quic_route(Some(&proxy), host).is_ok(),
+            "{host}"
+        );
+    }
+    assert!(super::ensure_quic_route(None, "public.invalid").is_ok());
+}

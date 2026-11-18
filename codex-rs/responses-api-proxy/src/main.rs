@@ -8,5 +8,6 @@ fn pre_main() {
 
 pub fn main() -> anyhow::Result<()> {
     let args = ResponsesApiProxyArgs::parse();
+    codex_required_proxy::require_local_helper_proxy()?;
     codex_responses_api_proxy::run_main(args)
 }

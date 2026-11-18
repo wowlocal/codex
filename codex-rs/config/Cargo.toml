@@ -12,6 +12,8 @@ path = "examples/generate-proto.rs"
 workspace = true
 
 [dependencies]
+url = { workspace = true }
+codex-required-proxy = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 codex-execpolicy = { workspace = true }

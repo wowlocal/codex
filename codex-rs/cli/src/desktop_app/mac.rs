@@ -234,7 +234,14 @@ fn candidate_applications_dirs() -> anyhow::Result<Vec<PathBuf>> {
 
 async fn download_dmg(url: &str, dest: &Path) -> anyhow::Result<()> {
     eprintln!("Downloading installer...");
-    let status = Command::new("curl")
+    let mut command = Command::new("curl");
+    // -q must be the first argument: a user curlrc must not override mandatory routing.
+    command
+        .arg("-q")
+        .args(["--proto", "=http,https", "--proto-redir", "=http,https"]);
+    let proxy_env = codex_required_proxy::command_proxy_env_checked(None)?;
+    configure_download_proxy(&mut command, &proxy_env);
+    let status = command
         .arg("-fL")
         .arg("--retry")
         .arg("3")
@@ -251,6 +258,16 @@ async fn download_dmg(url: &str, dest: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!("curl download failed with {status}");
+}
+
+fn configure_download_proxy(command: &mut Command, proxy_env: &[(String, String)]) {
+    command.envs(proxy_env.iter().cloned());
+    if let Some((_, gateway)) = proxy_env.iter().find(|(name, _)| name == "HTTPS_PROXY") {
+        command.args(["--proxy", gateway]);
+    }
+    if let Some((_, direct)) = proxy_env.iter().find(|(name, _)| name == "NO_PROXY") {
+        command.args(["--noproxy", direct]);
+    }
 }
 
 async fn mount_dmg(dmg_path: &Path) -> anyhow::Result<PathBuf> {
@@ -370,6 +387,30 @@ mod tests {
             ),
         )
         .expect("write Info.plist");
+    }
+
+    #[test]
+    fn installer_curl_uses_credential_free_gateway_explicitly() {
+        let mut command = tokio::process::Command::new("curl");
+        super::configure_download_proxy(
+            &mut command,
+            &[
+                ("HTTPS_PROXY".into(), "http://codex@127.0.0.1:1234".into()),
+                ("NO_PROXY".into(), "localhost,127.0.0.1,::1".into()),
+            ],
+        );
+        let command = command.as_std();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("--proxy"),
+                std::ffi::OsStr::new("http://codex@127.0.0.1:1234"),
+                std::ffi::OsStr::new("--noproxy"),
+                std::ffi::OsStr::new("localhost,127.0.0.1,::1"),
+            ]
+        );
+        assert!(command.get_envs().any(|(key, value)| key == "HTTPS_PROXY"
+            && value == Some(std::ffi::OsStr::new("http://codex@127.0.0.1:1234"))));
     }
 
     #[test]

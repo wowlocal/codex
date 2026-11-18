@@ -8,11 +8,10 @@ use codex_app_server_transport::WebSocketCompression;
 use codex_app_server_transport::ZstdDecoder;
 use codex_app_server_transport::ZstdEncoder;
 use codex_app_server_transport::zstd_codec_pair;
+use futures::Sink;
 use futures::SinkExt;
+use futures::Stream;
 use futures::StreamExt;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
-use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Bytes;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
@@ -27,16 +26,19 @@ const DEFAULT_MAX_FRAME_BYTES: usize = 16 << 20;
 const MAX_UNFRAGMENTED_MESSAGE_BYTES_HEADER: &str =
     "x-codex-websocket-max-unfragmented-message-bytes";
 
-pub(crate) type WebSocketHandshake<S> = (WebSocketStream<S>, Response);
+pub(crate) type WebSocketHandshake<S> = (S, Response);
 
 pub(crate) struct RemoteWebSocket<S> {
-    stream: WebSocketStream<S>,
+    stream: S,
     codec: Option<(ZstdEncoder, ZstdDecoder)>,
     max_frame_bytes: usize,
     write_failed: bool,
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin> RemoteWebSocket<S> {
+impl<S> RemoteWebSocket<S>
+where
+    S: Stream<Item = Result<Message, Error>> + Sink<Message, Error = Error> + Unpin,
+{
     pub(crate) fn from_handshake(
         (stream, response): WebSocketHandshake<S>,
         max_message_size: usize,
@@ -115,6 +117,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RemoteWebSocket<S> {
     }
 
     pub(crate) async fn close(&mut self) -> Result<(), Error> {
-        self.stream.close(/*msg*/ None).await
+        self.stream.close().await
     }
 }

@@ -194,7 +194,12 @@ async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Re
         assert_eq!(response["id"], 1);
         assert!(response["result"]["sessionId"].is_string(), "{response}");
         let environment = response["result"]["environmentInfo"].clone();
-        assert_eq!(environment["executorVersion"], env!("CARGO_PKG_VERSION"));
+        // Upstream 0.170 uses package metadata for the protocol version. A Cargo
+        // source build has no package manifest and correctly reports 0.0.0.
+        assert_eq!(
+            environment["executorVersion"],
+            codex_build_info::BuildInfo::get().version().to_string()
+        );
         let initialized = json!({"method": "initialized", "params": {}});
         let info = json!({"id": 2, "method": "environment/info", "params": {}});
         stdin
@@ -250,5 +255,38 @@ async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Re
         drop(stdin);
         assert!(child.wait().await?.success());
     }
+    Ok(())
+}
+
+#[test]
+fn required_proxy_boundary_is_enforced_before_standalone_startup() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let binary = codex_utils_cargo_bin::cargo_bin("codex-exec-server")?;
+    for marker in [None, Some("192.0.2.1:3128"), Some("127.0.0.1:0")] {
+        let mut command = std::process::Command::new(&binary);
+        command
+            .args(["--listen", "stdio"])
+            .env("CODEX_HOME", home.path())
+            .env("CODEX_FORK_REQUIRE_PROXY", "1")
+            .env_remove("CODEX_FORK_DANGEROUSLY_ALLOW_DIRECT")
+            .env_remove(codex_required_proxy::COMMAND_PROXY_ENV)
+            .stdin(std::process::Stdio::null());
+        if let Some(marker) = marker {
+            command.env(codex_required_proxy::COMMAND_PROXY_ENV, marker);
+        }
+        let result = command.output()?;
+        assert!(!result.status.success());
+        let stderr = String::from_utf8(result.stderr)?;
+        assert!(
+            stderr.contains("proxy boundary") || stderr.contains("numeric loopback address"),
+            "{stderr}"
+        );
+    }
+    let result = std::process::Command::new(binary)
+        .args(["--version"])
+        .env("CODEX_FORK_REQUIRE_PROXY", "1")
+        .env_remove(codex_required_proxy::COMMAND_PROXY_ENV)
+        .output()?;
+    assert!(result.status.success());
     Ok(())
 }

@@ -355,8 +355,22 @@ fn client_config(mut transport: quinn::TransportConfig) -> Result<quinn::ClientC
     Ok(config)
 }
 
+fn ensure_quic_route(
+    proxy: Option<&codex_required_proxy::RequiredProxy>,
+    host: &str,
+) -> Result<()> {
+    ensure!(
+        proxy.is_none_or(|proxy| proxy.bypasses_host(host)),
+        "HTTP/3 tunnels cannot use the required HTTP proxy; refusing a direct connection"
+    );
+    Ok(())
+}
+
 impl ProxyConnection {
     async fn connect(target: &ProxyTarget, config: &quinn::ClientConfig) -> Result<Self> {
+        // QUIC is UDP and cannot use the mandatory HTTP CONNECT gateway. Reject before
+        // DNS resolution or socket creation; only explicitly direct endpoints are usable.
+        ensure_quic_route(codex_required_proxy::current().as_deref(), &target.host)?;
         tokio::time::timeout(PROXY_CONNECT_TIMEOUT, async {
             let mut last_error = anyhow!("MASQUE proxy resolved to no addresses");
             for peer in tokio::net::lookup_host((target.host.as_str(), target.port)).await? {

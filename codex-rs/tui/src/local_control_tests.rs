@@ -184,6 +184,14 @@ async fn only_matching_native_settings_confirm_request() {
             personality: None,
         },
     };
+    control.observe(&AppServerEvent::ThreadStreamReconnected(
+        request.expected_thread_id.clone(),
+    ));
+    assert!(
+        control.pending.is_some(),
+        "reconnection must not confirm settings"
+    );
+
     control.observe(&AppServerEvent::ServerNotification(Box::new(
         ServerNotification::ThreadSettingsUpdated(updated.clone()),
     )));

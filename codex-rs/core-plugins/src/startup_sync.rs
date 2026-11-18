@@ -267,9 +267,9 @@ fn fetch_curated_plugins_commit_from(
 ) -> Result<(), String> {
     let fetch_refspec = format!("+{source_revision}:{CURATED_PLUGINS_FETCH_REF}");
     let mut command = git_command(git_binary)?;
+    command.arg("-C").arg(repo_path);
+    crate::git_policy::configure_git_remote(&mut command, &source.to_string_lossy())?;
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(["fetch", "--depth", "1", "--no-tags"])
         .arg(source)
         .arg(fetch_refspec);
@@ -610,8 +610,9 @@ fn read_local_git_or_sha_file(
 fn git_ls_remote_head_sha(codex_home: &Path, git_binary: &Path) -> Result<String, String> {
     let mut command = git_command(git_binary)?;
     let _trusted_repository = crate::configure_trusted_git_repository(&mut command, codex_home)?;
+    command.current_dir(codex_home);
+    crate::git_policy::configure_git_remote(&mut command, OPENAI_PLUGINS_GIT_URL)?;
     command
-        .current_dir(codex_home)
         .arg("ls-remote")
         .arg(OPENAI_PLUGINS_GIT_URL)
         .arg("HEAD");
