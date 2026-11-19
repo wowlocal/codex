@@ -173,6 +173,13 @@ impl TransportClient {
     ) -> Result<reqwest::Response, reqwest::Error> {
         apply_default_headers(request.headers_mut(), &self.default_headers);
         request.headers_mut().extend(trace_headers());
+        if codex_required_proxy::is_active() {
+            // The gateway owns proxy authentication and treats the header as a caller identity.
+            request
+                .headers_mut()
+                .remove(http::header::PROXY_AUTHORIZATION);
+            request.headers_mut().remove("proxy-connection");
+        }
         self.inner.execute(request).await
     }
 

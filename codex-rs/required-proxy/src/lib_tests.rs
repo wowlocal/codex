@@ -130,6 +130,18 @@ fn url_credentials_are_redacted() {
     assert!(carries_credentials("https://user@proxy.example"));
     assert!(carries_credentials("http://user:secret@127.0.0.1:3128"));
     assert!(!carries_credentials("http://thread-1@127.0.0.1:3128"));
+    assert!(!carries_credentials(
+        "http://thread-1:codex-local@127.0.0.1:3128"
+    ));
+    assert!(!carries_credentials("http://codex:codex-local@[::1]:3128"));
+    assert!(!carries_credentials("http://codex:codex-local@127.0.0.2:80"));
+    assert!(carries_credentials(
+        "http://codex:codex-local@proxy.example:3128"
+    ));
+    assert!(carries_credentials(
+        "http://user:codex-local@127.0.0.1:3128"
+    ));
+    assert!(carries_credentials("http://thread-1:secret@127.0.0.1:3128"));
     assert!(!carries_credentials("localhost,127.0.0.1"));
 }
 

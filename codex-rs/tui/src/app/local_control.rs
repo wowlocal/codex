@@ -1,14 +1,22 @@
 //! Dispatch local settings requests in the same event loop as human TUI input.
 use super::App;
 use crate::app_server_session::AppServerSession;
+use crate::backend_id::BackendId;
 use crate::local_control::LocalControl;
 use crate::local_control::SettingsChange;
 use crate::local_control::SettingsRequest;
 use crate::tui::Tui;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+use color_eyre::Result;
 use serde_json::Value;
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
+use uuid::Uuid;
+
+pub(super) type LocalSettingsUpdate =
+    Pin<Box<dyn Future<Output = (Uuid, BackendId, Result<bool>)> + Send>>;
 
 impl App {
     pub(super) fn local_control_snapshot(&self, tui: &Tui) -> Value {
@@ -34,13 +42,13 @@ impl App {
         state
     }
 
-    pub(super) async fn apply_local_settings(
+    pub(super) fn apply_local_settings(
         &mut self,
         tui: &Tui,
         app_server: &mut AppServerSession,
         control: &mut LocalControl,
         request: SettingsRequest,
-    ) {
+    ) -> Option<LocalSettingsUpdate> {
         let state = self.local_control_snapshot(tui);
         control.publish_for_backend(state.clone(), app_server.backend_id());
         let error = if state["ready"] != true || state["focused"] != true {
@@ -80,7 +88,7 @@ impl App {
         };
         if let Some(error) = error {
             control.finish(request.request_id, json!({"error":error}));
-            return;
+            return None;
         }
         let mut expected = json!({"model":state["model"]});
         let mut params = ThreadSettingsUpdateParams {
@@ -111,7 +119,7 @@ impl App {
                         request.request_id,
                         json!({"error":"Fast mode is unavailable"}),
                     );
-                    return;
+                    return None;
                 };
                 let tier = if *enabled {
                     fast_tier
@@ -131,20 +139,40 @@ impl App {
         {
             expected["threadId"] = state["threadId"].clone();
             control.finish(request.request_id, expected);
+            return None;
+        }
+        let request_id = request.request_id;
+        control.pending = Some((request, expected));
+        control.submitted_at = Some(std::time::Instant::now());
+        let backend_id = app_server.backend_id();
+        let update = app_server.start_thread_settings_update(params);
+        Some(Box::pin(
+            async move { (request_id, backend_id, update.await) },
+        ))
+    }
+
+    pub(super) fn finish_local_settings_update(
+        app_server: &mut AppServerSession,
+        control: &mut LocalControl,
+        (request_id, backend_id, result): (Uuid, BackendId, Result<bool>),
+    ) {
+        if app_server.backend_id() != backend_id
+            || !control
+                .pending
+                .as_ref()
+                .is_some_and(|(request, _)| request.request_id == request_id)
+        {
             return;
         }
-        control.pending = Some((request.clone(), expected));
-        control.submitted_at = Some(std::time::Instant::now());
-        // Do not optimistically change the widget. Its ordinary native settings
-        // notification updates the composer, and separately confirms the request.
-        match app_server.thread_settings_update(params).await {
+        // Only the native settings notification updates the composer and confirms the change.
+        match result {
             Ok(true) => (),
-            Ok(false) => control.finish(
-                request.request_id,
-                json!({"error":"settings updates unavailable"}),
-            ),
+            Ok(false) => {
+                app_server.thread_settings_update_supported = false;
+                control.finish(request_id, json!({"error":"settings updates unavailable"}));
+            }
             Err(_) => control.finish(
-                request.request_id,
+                request_id,
                 json!({"error":"native settings request failed","uncertain":true}),
             ),
         }

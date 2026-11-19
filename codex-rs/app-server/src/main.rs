@@ -6,6 +6,8 @@ use codex_app_server::AppServerRuntimeOptions;
 use codex_app_server::AppServerTransport;
 use codex_app_server::PluginStartupTasks;
 use codex_app_server::run_main_with_transport_options;
+use codex_app_server::startup_env;
+use codex_app_server::startup_proxy;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_config::LoaderOverrides;
@@ -80,6 +82,8 @@ struct AppServerArgs {
 }
 
 fn main() -> anyhow::Result<()> {
+    // SAFETY: no runtime or application threads exist before startup initialization.
+    let startup_proxy = unsafe { startup_env::apply()? };
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         let AppServerArgs {
@@ -95,7 +99,9 @@ fn main() -> anyhow::Result<()> {
             remote_control,
             managed_daemon,
         } = AppServerArgs::parse();
-        codex_required_proxy::require_local_helper_proxy()?;
+        if !codex_required_proxy::bootstrap_local_helper_from_env()? {
+            startup_proxy::install(&startup_proxy)?;
+        }
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
         } else {

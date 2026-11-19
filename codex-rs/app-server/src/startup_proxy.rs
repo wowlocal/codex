@@ -25,7 +25,7 @@ const RELOAD_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Whether a process may start without an upstream proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Enforcement {
+pub enum Enforcement {
     Required,
     AllowDirect,
 }
@@ -33,7 +33,7 @@ pub(crate) enum Enforcement {
 impl Enforcement {
     /// Release builds always require the proxy unless explicitly overridden. Debug builds,
     /// including tests with temporary Codex homes, require it only when one is stored.
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         let enabled = |key| std::env::var_os(key).is_some_and(|value| value == "1");
         if enabled(ALLOW_DIRECT_ENV) || (cfg!(debug_assertions) && !enabled(REQUIRE_PROXY_ENV)) {
             Self::AllowDirect
@@ -44,13 +44,13 @@ impl Enforcement {
 }
 
 /// Where one Codex home keeps its upstream proxy: each home has its own credential.
-pub(crate) struct ProxyStore {
+pub struct ProxyStore {
     codex_home: PathBuf,
     account: String,
 }
 
 impl ProxyStore {
-    pub(crate) fn for_codex_home() -> anyhow::Result<Self> {
+    pub fn for_codex_home() -> anyhow::Result<Self> {
         let codex_home = codex_core::config::find_codex_home()?.to_path_buf();
         let account = std::fs::canonicalize(&codex_home)
             .unwrap_or_else(|_| codex_home.clone())
@@ -62,16 +62,16 @@ impl ProxyStore {
         })
     }
 
-    pub(crate) fn codex_home(&self) -> &Path {
+    pub fn codex_home(&self) -> &Path {
         &self.codex_home
     }
 
-    pub(crate) fn load(&self) -> Result<Option<String>, CredentialStoreError> {
+    pub fn load(&self) -> Result<Option<String>, CredentialStoreError> {
         DefaultKeyringStore.load(KEYCHAIN_SERVICE, &self.account)
     }
 
     /// Stores the URL, confirms it reads back, and tells running processes to reload.
-    pub(crate) fn save(&self, url: &str) -> anyhow::Result<()> {
+    pub fn save(&self, url: &str) -> anyhow::Result<()> {
         DefaultKeyringStore.save(KEYCHAIN_SERVICE, &self.account, url)?;
         anyhow::ensure!(
             self.load()?.as_deref() == Some(url),
@@ -80,7 +80,7 @@ impl ProxyStore {
         self.notify_running_processes()
     }
 
-    pub(crate) fn delete(&self) -> anyhow::Result<bool> {
+    pub fn delete(&self) -> anyhow::Result<bool> {
         let deleted = DefaultKeyringStore.delete(KEYCHAIN_SERVICE, &self.account)?;
         self.notify_running_processes()?;
         Ok(deleted)
@@ -101,7 +101,8 @@ impl ProxyStore {
 }
 
 /// Installs the required proxy, or refuses to start without one (kill switch).
-pub(crate) fn install(startup: &StartupProxyConfig) -> anyhow::Result<()> {
+#[allow(clippy::print_stderr)]
+pub fn install(startup: &StartupProxyConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         startup.env_proxy_keys.is_empty(),
         "{} sets {} in [env], which no longer configures the proxy. Run `codex proxy import` \

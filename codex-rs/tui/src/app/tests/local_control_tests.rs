@@ -65,8 +65,26 @@ async fn native_effort_waits_for_settings_event_and_preserves_plan_and_config() 
         expected_thread_id: thread.to_string(),
         effort: ReasoningEffortConfig::Low,
     };
-    app.apply_local_settings(&tui, &mut server, &mut control, request.into())
-        .await;
+    let update = app
+        .apply_local_settings(&tui, &mut server, &mut control, request.into())
+        .expect("settings update");
+    assert!(
+        control.pending.is_some(),
+        "the TUI can keep processing events while the RPC is pending"
+    );
+    let backend = server.backend_id();
+    App::finish_local_settings_update(
+        &mut server,
+        &mut control,
+        (uuid::Uuid::new_v4(), backend, Ok(false)),
+    );
+    assert!(
+        control.pending.is_some(),
+        "a stale response must leave the new request pending"
+    );
+    assert!(server.thread_settings_update_supported);
+    let result = update.await;
+    App::finish_local_settings_update(&mut server, &mut control, result);
     assert!(
         control.pending.is_some(),
         "write acceptance must not be treated as confirmation"
@@ -149,8 +167,11 @@ async fn native_fast_roundtrip_preserves_effort_plan_and_config() -> Result<()> 
             expected_thread_id: thread.to_string(),
             enabled,
         };
-        app.apply_local_settings(&tui, &mut server, &mut control, request.into())
-            .await;
+        let update = app
+            .apply_local_settings(&tui, &mut server, &mut control, request.into())
+            .expect("settings update");
+        let result = update.await;
+        App::finish_local_settings_update(&mut server, &mut control, result);
         assert!(control.pending.is_some(), "await the native settings event");
         let updated = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
             loop {
@@ -243,8 +264,11 @@ async fn native_model_waits_for_confirmation_and_preserves_plan_and_config() -> 
         expected_thread_id: thread.to_string(),
         effort: ReasoningEffortConfig::Low,
     };
-    app.apply_local_settings(&tui, &mut server, &mut control, request.into())
-        .await;
+    let update = app
+        .apply_local_settings(&tui, &mut server, &mut control, request.into())
+        .expect("settings update");
+    let result = update.await;
+    App::finish_local_settings_update(&mut server, &mut control, result);
     assert!(
         control.pending.is_some(),
         "write acceptance must not be treated as confirmation"

@@ -39,6 +39,9 @@ pub const CODEX_IDENTITY: &str = "codex";
 pub const THREAD_IDENTITY_PREFIX: &str = "thread-";
 /// Local helper handoff. This contains only a numeric loopback address, never upstream credentials.
 pub const COMMAND_PROXY_ENV: &str = "CODEX_FORK_COMMAND_PROXY_V1";
+// Some clients only send Basic authentication when both URL fields are nonempty.
+// The loopback gateway uses only the username, so this fixed value is public.
+const COMMAND_PROXY_IDENTITY_PASSWORD: &str = "codex-local";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RequiredProxyError {
@@ -232,6 +235,11 @@ pub fn set_command_proxy(address: SocketAddr) -> Result<(), RequiredProxyError> 
         .map_err(|_| RequiredProxyError::CommandProxyAlreadySet)
 }
 
+/// The loopback gateway that handles upstream authentication for Codex's HTTP clients.
+pub fn command_proxy_address() -> Option<SocketAddr> {
+    COMMAND_PROXY.get().copied()
+}
+
 const COMMAND_PROXY_URL_KEYS: &[&str] = &[
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -267,7 +275,7 @@ pub fn command_proxy_env(thread_id: Option<&str>) -> Vec<(String, String)> {
         Some(thread_id) => format!("{THREAD_IDENTITY_PREFIX}{thread_id}"),
         None => CODEX_IDENTITY.to_string(),
     };
-    let url = format!("http://{identity}@{address}");
+    let url = command_proxy_url(&identity, address);
     let no_proxy = IMPLICIT_DIRECT.join(",");
     let mut env: Vec<(String, String)> = Vec::new();
     for key in COMMAND_PROXY_URL_KEYS {
@@ -297,13 +305,28 @@ pub fn command_proxy_env_checked(
 }
 
 /// Environment keys owned by the command-proxy boundary, case-insensitively on every platform.
-pub fn is_command_proxy_env_key(name: &str) -> bool {
+fn command_proxy_variable_names() -> impl Iterator<Item = &'static str> {
     COMMAND_PROXY_URL_KEYS
         .iter()
         .chain(COMMAND_NO_PROXY_KEYS)
         .copied()
+}
+
+/// The exact environment variable spellings that can be exported by the command proxy.
+pub fn command_proxy_env_keys() -> impl Iterator<Item = String> {
+    command_proxy_variable_names()
+        .flat_map(|key| [key.to_string(), key.to_ascii_lowercase()])
+        .chain(["NODE_USE_ENV_PROXY", COMMAND_PROXY_ENV].map(ToString::to_string))
+}
+
+pub fn is_command_proxy_env_key(name: &str) -> bool {
+    command_proxy_variable_names()
         .chain(["NODE_USE_ENV_PROXY", COMMAND_PROXY_ENV])
         .any(|key| name.eq_ignore_ascii_case(key))
+}
+
+fn command_proxy_url(identity: &str, address: SocketAddr) -> String {
+    format!("http://{identity}:{COMMAND_PROXY_IDENTITY_PASSWORD}@{address}")
 }
 
 /// Adopt a local parent's credential-free gateway without reading its Keychain item.
@@ -326,7 +349,7 @@ pub fn bootstrap_local_helper_from_env() -> Result<bool, RequiredProxyError> {
         return Err(RequiredProxyError::CommandProxyAlreadySet);
     }
     install(
-        RequiredProxy::new(&format!("http://{CODEX_IDENTITY}@{address}"), &[])?,
+        RequiredProxy::new(&command_proxy_url(CODEX_IDENTITY, address), &[])?,
         None,
     )?;
     if COMMAND_PROXY.get().is_none() {
@@ -368,13 +391,28 @@ pub fn normalize_proxy_url(value: &str) -> Result<String, RequiredProxyError> {
 
 /// Whether a value is a proxy URL whose userinfo may be a secret.
 ///
-/// A username without a password on a loopback proxy, such as Codex's command proxy identity,
-/// is not treated as a credential.
+/// Legacy passwordless loopback identities and Codex's fixed loopback marker are public.
 pub fn carries_credentials(value: &str) -> bool {
     let Ok(url) = url::Url::parse(&with_default_scheme(value.trim())) else {
         return false;
     };
     let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let identity = url.username();
+    let command_proxy_identity = identity == CODEX_IDENTITY
+        || identity
+            .strip_prefix(THREAD_IDENTITY_PREFIX)
+            .is_some_and(|thread| !thread.is_empty());
+    let gateway_address = value
+        .trim()
+        .rsplit_once('@')
+        .and_then(|(_, authority)| authority.parse::<SocketAddr>().ok());
+    if command_proxy_identity
+        && let Some(address) = gateway_address
+        && address.ip().is_loopback()
+        && value.trim() == command_proxy_url(identity, address)
+    {
+        return false;
+    }
     url.password().is_some() || (!url.username().is_empty() && !loopback)
 }
 

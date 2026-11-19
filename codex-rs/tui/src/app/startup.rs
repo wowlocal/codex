@@ -1367,6 +1367,8 @@ See the Codex keymap documentation for supported actions and examples."
         } else {
             None
         };
+        #[cfg(unix)]
+        let mut local_settings_update: Option<super::local_control::LocalSettingsUpdate> = None;
         let mut control_tick =
             tokio::time::interval(std::time::Duration::from_millis(/*millis*/ 100));
         control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1464,6 +1466,9 @@ See the Codex keymap documentation for supported actions and examples."
                 #[cfg(unix)]
                 if let Some(control) = local_control.as_mut() {
                     control.publish_for_backend(app.local_control_snapshot(tui), displayed_owner);
+                    if control.pending.is_none() {
+                        local_settings_update = None;
+                    }
                 }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     let presentation = app.reconnect.presentation;
@@ -1547,7 +1552,23 @@ See the Codex keymap documentation for supported actions and examples."
                     } => {
                         #[cfg(unix)]
                         if let (Some(request), Some(control)) = (_request, local_control.as_mut()) {
-                            app.apply_local_settings(tui, backends.session_at_mut(backends.displayed), control, request).await;
+                            local_settings_update = app.apply_local_settings(tui, backends.session_at_mut(backends.displayed), control, request);
+                        }
+                        AppRunControl::Continue
+                    }
+                    _result = async {
+                        #[cfg(unix)]
+                        {
+                            if let Some(update) = local_settings_update.as_mut() { return update.as_mut().await }
+                            std::future::pending().await
+                        }
+                        #[cfg(not(unix))]
+                        std::future::pending::<()>().await
+                    } => {
+                        #[cfg(unix)]
+                        if let Some(control) = local_control.as_mut() {
+                            local_settings_update = None;
+                            App::finish_local_settings_update(backends.session_at_mut(backends.displayed), control, _result);
                         }
                         AppRunControl::Continue
                     }

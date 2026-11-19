@@ -66,9 +66,9 @@ pub use crate::outbound_proxy::OutboundProxyRoute;
 pub use crate::outbound_proxy::RouteFailureClass;
 #[doc(hidden)]
 pub use crate::outbound_proxy::cache_system_proxy_route_for_test;
+pub use crate::outbound_proxy::configure_required_blocking_reqwest_proxy;
 #[cfg(target_os = "macos")]
 pub use crate::outbound_proxy::macos_system_proxy_configuration;
-pub use crate::outbound_proxy::required_reqwest_proxy;
 pub use crate::request::EncodedJsonBody;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;

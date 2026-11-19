@@ -28,13 +28,13 @@ struct ProxyTable {
 
 /// Proxy routing read from the startup configuration.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct StartupProxyConfig {
+pub struct StartupProxyConfig {
     /// The configuration file that was read, which `codex proxy import` edits.
-    pub(super) path: PathBuf,
+    pub path: PathBuf,
     /// `[proxy] direct` entries.
-    pub(super) direct: Vec<String>,
+    pub direct: Vec<String>,
     /// `[env]` entries that configure a proxy and are therefore not exported.
-    pub(super) env_proxy_keys: Vec<String>,
+    pub env_proxy_keys: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -49,7 +49,7 @@ struct Resolved {
 ///
 /// # Safety
 /// Must run before threads or the async runtime are started.
-pub(super) unsafe fn apply() -> anyhow::Result<StartupProxyConfig> {
+pub unsafe fn apply() -> anyhow::Result<StartupProxyConfig> {
     let explicit_path = std::env::var_os("CODEX_FORK_CONFIG");
     let path = match explicit_path.as_ref() {
         Some(path) => PathBuf::from(path),
@@ -75,13 +75,13 @@ pub(super) unsafe fn apply() -> anyhow::Result<StartupProxyConfig> {
 }
 
 /// Reads `[proxy] direct` again, for processes that follow proxy changes while running.
-pub(super) fn read_direct(path: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn read_direct(path: &Path) -> anyhow::Result<Vec<String>> {
     let contents = read(path, /*missing_is_empty*/ true)?;
     Ok(resolve(&contents, std::iter::empty())?.direct)
 }
 
 /// Whether an environment variable configures a proxy.
-pub(super) fn is_proxy_key(key: &str) -> bool {
+pub fn is_proxy_key(key: &str) -> bool {
     key.to_ascii_uppercase().contains("PROXY")
 }
 

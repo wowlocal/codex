@@ -55,6 +55,9 @@ impl PluginGitMode {
                 command.args([
                     "-c",
                     &format!("http.proxy={gateway}"),
+                    // Use the same remote name for cloning and for the proxy setting below.
+                    "-c",
+                    "clone.defaultRemoteName=origin",
                     "-c",
                     &format!("remote.origin.proxy={gateway}"),
                 ]);
@@ -127,6 +130,14 @@ fn configure_git_repository_origin_with_proxy(
             return Err("Git marketplace remote URL is empty".to_string());
         }
         configure_git_remote_with_proxy(command, source, proxy, proxy_env.clone())?;
+        if let Some((_, gateway)) = proxy_env.iter().find(|(name, _)| name == "HTTPS_PROXY") {
+            let remote = key
+                .strip_suffix(".url")
+                .filter(|remote| !remote.contains('='))
+                .ok_or_else(|| "invalid Git marketplace remote configuration".to_string())?;
+            // A named fetch's remote.<name>.proxy takes precedence over every http.*.proxy.
+            command.args(["-c", &format!("{remote}.proxy={gateway}")]);
+        }
         for (name, value) in command.get_envs() {
             if name == "GIT_ALLOW_PROTOCOL"
                 && let Some(value) = value
@@ -430,6 +441,28 @@ mod proxy_tests {
                 .any(|arg| arg
                     == "http.https://github.com/org/repo.proxy=http://codex@127.0.0.1:1234")
         );
+    }
+
+    #[test]
+    fn partial_checkout_pins_the_named_promisor_proxy() {
+        let (_root, mut command) = git_command_with_config(
+            "[remote \"cache.Backup\"]\n    url = https://github.com/org/repo\n    proxy = http://other.invalid:8080\n    promisor = true\n",
+        );
+        let proxy =
+            codex_required_proxy::RequiredProxy::new("http://upstream.invalid:8080", &[]).unwrap();
+        let gateway = "http://codex:codex-local@127.0.0.1:1234";
+        super::configure_git_repository_origin_with_proxy(
+            &mut command,
+            &proxy,
+            vec![("HTTPS_PROXY".into(), gateway.into())],
+        )
+        .unwrap();
+        let output = super::git_configuration_command(&command)
+            .args(["config", "--get", "remote.cache.Backup.proxy"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), gateway);
     }
 
     #[test]

@@ -25,12 +25,12 @@ fn helper_boundary_never_silently_becomes_direct() -> Result<(), Box<dyn Error>>
                     codex_required_proxy::command_proxy_env(None)
                         .into_iter()
                         .collect();
-                assert_eq!(env["HTTPS_PROXY"], "http://codex@127.0.0.1:0");
+                assert_eq!(env["HTTPS_PROXY"], "http://codex:codex-local@127.0.0.1:0");
             }
             "valid" => {
                 codex_required_proxy::require_local_helper_proxy()?;
                 let proxy = codex_required_proxy::current().ok_or("missing delegated policy")?;
-                assert_eq!(proxy.url(), "http://codex@127.0.0.1:32123");
+                assert_eq!(proxy.url(), "http://codex:codex-local@127.0.0.1:32123");
                 let env: std::collections::HashMap<_, _> =
                     codex_required_proxy::command_proxy_env_checked(Some("test-thread"))?
                         .into_iter()
@@ -42,7 +42,10 @@ fn helper_boundary_never_silently_becomes_direct() -> Result<(), Box<dyn Error>>
                     "YARN_HTTPS_PROXY",
                     "grpc_proxy",
                 ] {
-                    assert_eq!(env[key], "http://thread-test-thread@127.0.0.1:32123");
+                    assert_eq!(
+                        env[key],
+                        "http://thread-test-thread:codex-local@127.0.0.1:32123"
+                    );
                 }
                 assert_eq!(env[COMMAND_PROXY_ENV], "127.0.0.1:32123");
                 assert!(!env["NO_PROXY"].contains('*'));

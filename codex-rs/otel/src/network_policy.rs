@@ -78,6 +78,29 @@ impl<E: PushMetricExporter> PushMetricExporter for PolicyExporter<E> {
     }
 }
 
+/// Filters hop credentials after the SDK merges configured and environment headers.
+#[derive(Debug)]
+pub(crate) struct BlockingHttpClient(pub(crate) reqwest::blocking::Client);
+
+impl opentelemetry_http::HttpClient for BlockingHttpClient {
+    fn send_bytes<'client, 'request>(
+        &'client self,
+        mut request: http::Request<Bytes>,
+    ) -> Pin<Box<dyn Future<Output = Result<http::Response<Bytes>, HttpError>> + Send + 'request>>
+    where
+        'client: 'request,
+        Self: 'request,
+    {
+        if codex_required_proxy::is_active() {
+            request
+                .headers_mut()
+                .remove(http::header::PROXY_AUTHORIZATION);
+            request.headers_mut().remove("proxy-connection");
+        }
+        opentelemetry_http::HttpClient::send_bytes(&self.0, request)
+    }
+}
+
 /// Keeps blocking SDK worker threads from performing uncancellable HTTP I/O.
 #[derive(Debug)]
 pub(crate) struct RuntimeHttpClient {

@@ -38,7 +38,7 @@ fn command_env_replaces_inherited_proxies_with_the_thread_command_proxy() {
     .into_iter()
     .map(|key| (key, env.get(key).map(String::as_str).unwrap_or_default()))
     .collect();
-    let url = "http://thread-t1@127.0.0.1:4242";
+    let url = "http://thread-t1:codex-local@127.0.0.1:4242";
     let no_proxy = "localhost,127.0.0.1,::1";
     assert_eq!(
         proxy_vars,
@@ -58,19 +58,19 @@ fn command_env_replaces_inherited_proxies_with_the_thread_command_proxy() {
     let mut late = create_env_from_vars(Vec::new(), &policy, /*thread_id*/ None);
     assert_eq!(
         late.get("HTTP_PROXY").map(String::as_str),
-        Some("http://codex@127.0.0.1:4242")
+        Some("http://codex:codex-local@127.0.0.1:4242")
     );
     late.insert("CODEX_THREAD_ID".to_string(), "t2".to_string());
     codex_protocol::shell_environment::apply_command_proxy_env(&mut late);
     assert_eq!(
         late.get("HTTP_PROXY").map(String::as_str),
-        Some("http://thread-t2@127.0.0.1:4242")
+        Some("http://thread-t2:codex-local@127.0.0.1:4242")
     );
     assert_eq!(
         codex_required_proxy::command_proxy_env(/*thread_id*/ None)[0],
         (
             "HTTP_PROXY".to_string(),
-            "http://codex@127.0.0.1:4242".to_string()
+            "http://codex:codex-local@127.0.0.1:4242".to_string()
         )
     );
 }

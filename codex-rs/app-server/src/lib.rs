@@ -147,6 +147,8 @@ mod request_processors;
 mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
+pub mod startup_env;
+pub mod startup_proxy;
 mod startup_warnings;
 mod thread_sample;
 mod thread_state;

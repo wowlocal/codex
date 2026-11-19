@@ -17,22 +17,36 @@ fn responses_forwarder_never_bypasses_required_proxy() -> Result<()> {
             )?,
             None,
         )?;
-        let client = upstream_client_builder(&Auth::ApiKey("fixture-api-key"))?
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(3))
-            .build()?;
-        let result = client
-            .post(format!("http://{}/v1/responses", std::env::var(ORIGIN)?))
-            .body("{}")
-            .send();
-        if mode == "ok" {
-            assert_eq!(result?.status(), reqwest::StatusCode::OK);
-        } else {
-            assert!(
-                result.is_err() || result.is_ok_and(|response| !response.status().is_success())
-            );
-        }
-        return Ok(());
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let gateway = codex_command_proxy::spawn(
+                    tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+                    codex_required_proxy::current,
+                )?;
+                codex_required_proxy::set_command_proxy(gateway)?;
+                tokio::task::spawn_blocking(move || {
+                    let client = upstream_client_builder(&Auth::ApiKey("fixture-api-key"))?
+                        .connect_timeout(Duration::from_secs(2))
+                        .timeout(Duration::from_secs(3))
+                        .build()?;
+                    let result = client
+                        .post(format!("http://{}/v1/responses", std::env::var(ORIGIN)?))
+                        .body("{}")
+                        .send();
+                    if mode == "ok" {
+                        assert_eq!(result?.status(), reqwest::StatusCode::OK);
+                    } else {
+                        assert!(
+                            result.is_err()
+                                || result.is_ok_and(|response| !response.status().is_success())
+                        );
+                    }
+                    Ok(())
+                })
+                .await?
+            });
     }
     for mode in ["ok", "407", "reset", "unavailable"] {
         let origin = TcpListener::bind("0.0.0.0:0")?;

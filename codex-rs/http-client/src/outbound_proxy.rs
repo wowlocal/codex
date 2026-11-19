@@ -595,16 +595,14 @@ pub(crate) fn configure_builder_for_resolved_route(
     route_class: ClientRouteClass,
     route: &OutboundProxyRoute,
 ) -> Result<reqwest::ClientBuilder, BuildRouteAwareHttpClientError> {
-    if matches!(route, OutboundProxyRoute::Unavailable) {
-        return Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class });
-    }
-    // A route selected for exceptional upstream behavior cannot override the fork's
-    // required proxy. The matcher alone owns explicit-direct and loopback exceptions.
+    // The fork's required route takes precedence over platform discovery and caller overrides.
     if codex_required_proxy::is_active() {
-        return Ok(builder.no_proxy().proxy(required_reqwest_proxy()));
+        return Ok(configure_required_reqwest_proxy(builder));
     }
     match route {
-        OutboundProxyRoute::Unavailable => unreachable!("handled above"),
+        OutboundProxyRoute::Unavailable => {
+            Err(BuildRouteAwareHttpClientError::ProxyUnavailable { route_class })
+        }
         OutboundProxyRoute::TransportDefault => Ok(builder),
         OutboundProxyRoute::Direct => Ok(builder.no_proxy()),
         OutboundProxyRoute::Proxy { url, no_proxy } => {
@@ -617,16 +615,41 @@ pub(crate) fn configure_builder_for_resolved_route(
 /// Every proxied destination fails when no required proxy can be selected.
 const REFUSE_ALL_PROXY_URL: &str = "http://127.0.0.1:0";
 
-/// A reqwest proxy that follows the current required proxy, including reloads.
-///
-/// Configured direct destinations connect directly; anything else that cannot use the required
-/// proxy is sent to an unusable proxy instead of a direct route.
-pub fn required_reqwest_proxy() -> reqwest::Proxy {
+pub(crate) fn configure_required_reqwest_proxy(
+    builder: reqwest::ClientBuilder,
+) -> reqwest::ClientBuilder {
+    builder
+        .no_proxy()
+        .proxy(required_reqwest_proxy())
+        // Hyper pools by destination, independently of the route. Open a fresh connection so
+        // the matcher runs after changes to the direct list, including on redirect hops.
+        .pool_max_idle_per_host(0)
+}
+
+/// Apply the fork's required proxy and reload semantics to a blocking HTTP client.
+pub fn configure_required_blocking_reqwest_proxy(
+    builder: reqwest::blocking::ClientBuilder,
+) -> reqwest::blocking::ClientBuilder {
+    builder
+        .no_proxy()
+        .proxy(required_reqwest_proxy())
+        .pool_max_idle_per_host(0)
+}
+
+fn required_reqwest_proxy() -> reqwest::Proxy {
     reqwest::Proxy::custom(|destination| {
-        let Some(required) = codex_required_proxy::current() else {
-            return Some(REFUSE_ALL_PROXY_URL.to_string());
-        };
-        required.proxy_for(destination).map(str::to_string)
+        if codex_required_proxy::current()
+            .is_some_and(|required| required.proxy_for(destination).is_none())
+        {
+            // An explicitly direct endpoint can use plaintext HTTP/2 (e.g. local gRPC).
+            return None;
+        }
+        // Keep the upstream credentials out of reqwest. The gateway applies them on its own
+        // upstream socket. Without a gateway, fail closed for destinations that need one.
+        Some(codex_required_proxy::command_proxy_address().map_or_else(
+            || REFUSE_ALL_PROXY_URL.to_string(),
+            |address| format!("http://{address}"),
+        ))
     })
 }
 

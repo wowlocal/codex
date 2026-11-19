@@ -103,15 +103,16 @@ async fn handle(mut client: TcpStream, state: &State) -> io::Result<()> {
             Route::Upstream => upstream::tunnel(&request.target, required.url()).await,
             Route::Direct => upstream::connect_direct(&host, port)
                 .await
-                .map(|stream| Box::new(stream) as Box<dyn upstream::Stream>),
+                .map(|stream| (Box::new(stream) as Box<dyn upstream::Stream>, Vec::new())),
         };
-        let mut server = match server {
+        let (mut server, upstream_bytes) = match server {
             Ok(server) => server,
             Err(failure) => return fail(&mut client, failure).await,
         };
         client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
+        client.write_all(&upstream_bytes).await?;
         server.write_all(&rest).await?;
         tokio::io::copy_bidirectional(&mut client, &mut server).await?;
         return Ok(());

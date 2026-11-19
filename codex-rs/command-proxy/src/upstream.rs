@@ -66,12 +66,13 @@ pub(crate) async fn connect(proxy_url: &str) -> Result<Upstream, Failure> {
             .map_err(|error| Failure::upstream(format!("TLS configuration failed: {error}")))?;
         let server_name = ServerName::try_from(host)
             .map_err(|_| Failure::upstream("the upstream proxy host is not a valid TLS name"))?;
-        let tls = TlsConnector::from(config)
-            .connect(server_name, tcp)
-            .await
-            .map_err(|error| {
-                Failure::upstream(format!("TLS to the upstream proxy failed: {error}"))
-            })?;
+        let tls = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            TlsConnector::from(config).connect(server_name, tcp),
+        )
+        .await
+        .map_err(|_| Failure::upstream("timed out negotiating TLS with the upstream proxy"))?
+        .map_err(|error| Failure::upstream(format!("TLS to the upstream proxy failed: {error}")))?;
         Box::new(tls)
     } else {
         Box::new(tcp)
@@ -83,7 +84,10 @@ pub(crate) async fn connect(proxy_url: &str) -> Result<Upstream, Failure> {
 }
 
 /// Opens a tunnel to `authority` through the upstream proxy.
-pub(crate) async fn tunnel(authority: &str, proxy_url: &str) -> Result<Box<dyn Stream>, Failure> {
+pub(crate) async fn tunnel(
+    authority: &str,
+    proxy_url: &str,
+) -> Result<(Box<dyn Stream>, Vec<u8>), Failure> {
     let Upstream {
         mut stream,
         authorization,
@@ -93,15 +97,15 @@ pub(crate) async fn tunnel(authority: &str, proxy_url: &str) -> Result<Box<dyn S
         request.push_str(&format!("Proxy-Authorization: {authorization}\r\n"));
     }
     request.push_str("\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|error| Failure::upstream(format!("upstream proxy write failed: {error}")))?;
-    let (response, rest) = head::read_head(&mut stream)
-        .await
-        .map_err(|error| Failure::upstream(format!("upstream proxy read failed: {error}")))?;
+    let (response, rest) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        stream.write_all(request.as_bytes()).await?;
+        head::read_head(&mut stream).await
+    })
+    .await
+    .map_err(|_| Failure::upstream("timed out waiting for the upstream proxy's CONNECT response"))?
+    .map_err(|error| Failure::upstream(format!("upstream proxy CONNECT failed: {error}")))?;
     match head::status_code(&response) {
-        Some(status) if (200..300).contains(&status) && rest.is_empty() => Ok(stream),
+        Some(status) if (200..300).contains(&status) => Ok((stream, rest)),
         Some(status) => Err(Failure::upstream(format!(
             "the upstream proxy answered {status} for {authority}"
         ))),

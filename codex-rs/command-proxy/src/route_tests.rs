@@ -122,6 +122,48 @@ fn threads_may_go_direct_except_for_pinned_hosts_and_codex_never_does() {
 }
 
 #[test]
+fn remove_accepts_the_same_spelling_as_add() {
+    let policies = Policies::default();
+    let proxy = RequiredProxy::new("http://proxy.invalid:3128", &[]).expect("valid proxy");
+    let add = vec!["EXAMPLE.invalid".to_string(), "*.OTHER.invalid".to_string()];
+    let identity = Identity::Thread("test".to_string());
+    policies
+        .update(
+            "test",
+            RoutingUpdate {
+                add: add.clone(),
+                ..RoutingUpdate::default()
+            },
+        )
+        .expect("add routes");
+    assert_eq!(
+        policies.route(&proxy, &identity, "example.invalid"),
+        Route::Direct
+    );
+    assert_eq!(
+        policies.route(&proxy, &identity, "a.other.invalid"),
+        Route::Direct
+    );
+    policies
+        .update(
+            "test",
+            RoutingUpdate {
+                remove: add,
+                ..RoutingUpdate::default()
+            },
+        )
+        .expect("remove routes");
+    assert_eq!(
+        policies.route(&proxy, &identity, "example.invalid"),
+        Route::Upstream
+    );
+    assert_eq!(
+        policies.route(&proxy, &identity, "a.other.invalid"),
+        Route::Upstream
+    );
+}
+
+#[test]
 fn threads_cannot_send_openai_direct() {
     let policies = Policies::default();
     let error = policies

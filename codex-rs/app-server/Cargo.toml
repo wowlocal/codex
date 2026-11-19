@@ -41,6 +41,7 @@ codex-app-server-daemon = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-aws-auth = { workspace = true }
 codex-cloud-config = { workspace = true }
+codex-command-proxy = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-config = { workspace = true }
 codex-network-proxy = { workspace = true }
@@ -63,6 +64,7 @@ codex-file-watcher = { workspace = true }
 codex-hooks = { workspace = true }
 codex-history-notes-extension = { workspace = true }
 codex-http-client = { workspace = true }
+codex-keyring-store = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-shell-command = { workspace = true }

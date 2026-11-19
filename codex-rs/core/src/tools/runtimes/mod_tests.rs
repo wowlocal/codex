@@ -762,6 +762,52 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env() {
     );
 }
 
+#[test]
+fn snapshot_wrapper_restores_fork_command_proxy_and_keeps_profile_ca() {
+    let dir = tempdir().expect("create temp dir");
+    let snapshot = dir.path().join("snapshot.sh");
+    std::fs::write(
+        &snapshot,
+        "export HTTP_PROXY=http://127.0.0.1:8080\n\
+         export grpc_proxy=http://127.0.0.1:8080\n\
+         export GLOBAL_AGENT_NO_PROXY=*\n\
+         export SSL_CERT_FILE=/profile/cert.pem\n\
+         export CODEX_FORK_COMMAND_PROXY_V1=127.0.0.1:8080\n",
+    )
+    .expect("write snapshot");
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot.abs());
+    let command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        "printf '%s\n' \"$CODEX_FORK_COMMAND_PROXY_V1\" \"$HTTP_PROXY\" \"$grpc_proxy\" \"$GLOBAL_AGENT_NO_PROXY\" \"$SSL_CERT_FILE\""
+            .to_string(),
+    ];
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        Some(&shell_snapshot),
+        &HashMap::new(),
+        &HashMap::new(),
+        &RuntimePathPrepends::default(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env_clear()
+        .env(COMMAND_PROXY_ENV, "127.0.0.1:4321")
+        .env("HTTP_PROXY", "http://127.0.0.1:4321")
+        .env("grpc_proxy", "http://127.0.0.1:4321")
+        .env("GLOBAL_AGENT_NO_PROXY", "localhost")
+        .output()
+        .expect("run rewritten command");
+
+    assert!(output.status.success(), "command failed: {output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "127.0.0.1:4321\nhttp://127.0.0.1:4321\nhttp://127.0.0.1:4321\nlocalhost\n/profile/cert.pem\n"
+    );
+}
+
 #[tokio::test]
 async fn snapshot_wrapper_preserves_readonly_dummy_credentials() -> anyhow::Result<()> {
     let proxy = test_credential_broker_network_proxy().await?;

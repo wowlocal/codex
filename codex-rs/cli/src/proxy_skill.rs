@@ -13,7 +13,8 @@ description: How network access works in this Codex. Use when a shell command's 
 # Codex proxy routing
 
 Shell commands you run get `HTTP_PROXY`/`HTTPS_PROXY` pointing at Codex's local proxy
-(`http://thread-<id>@127.0.0.1:<port>`). It forwards traffic to the user's upstream proxy,
+(`http://thread-<id>:codex-local@127.0.0.1:<port>`). The fixed marker is public. The local proxy
+forwards traffic to the user's upstream proxy,
 whose address and credentials live in the system credential store and are never available
 to you. Do not look for them, do not unset or override proxy variables, and do not bypass the
 proxy with `--noproxy`, `NO_PROXY` or tools that ignore proxy variables.

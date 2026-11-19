@@ -372,12 +372,13 @@ impl HttpClientBuilder {
                         );
                         if codex_required_proxy::is_active() {
                             // `Client::new()` would discover a direct route.
-                            reqwest::Client::builder()
-                                .proxy(crate::outbound_proxy::required_reqwest_proxy())
-                                .build()
-                                .unwrap_or_else(|_| {
-                                    panic!("cannot build an HTTP client for the required proxy")
-                                })
+                            crate::outbound_proxy::configure_required_reqwest_proxy(
+                                reqwest::Client::builder(),
+                            )
+                            .build()
+                            .unwrap_or_else(|_| {
+                                panic!("cannot build an HTTP client for the required proxy")
+                            })
                         } else {
                             reqwest::Client::new()
                         }
@@ -400,9 +401,7 @@ impl HttpClientBuilder {
     fn reqwest_builder(self, proxy_routing: ProxyRouting) -> reqwest::ClientBuilder {
         let builder = self.base_reqwest_builder();
         if codex_required_proxy::is_active() {
-            return builder
-                .no_proxy()
-                .proxy(crate::outbound_proxy::required_reqwest_proxy());
+            return crate::outbound_proxy::configure_required_reqwest_proxy(builder);
         }
         match proxy_routing {
             ProxyRouting::TransportDefault => builder,

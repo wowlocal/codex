@@ -94,6 +94,42 @@ async fn codex_traffic_uses_the_upstream_proxy_with_its_credentials() {
 }
 
 #[tokio::test]
+async fn forwards_tunnel_bytes_buffered_with_the_upstream_connect_response() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let proxy = command_proxy(upstream.local_addr().expect("address")).await;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await.expect("accept");
+        let (head, _) = head::read_head(&mut stream).await.expect("read CONNECT");
+        assert!(head.starts_with(b"CONNECT example.invalid:22 HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nSSH-2.0-fixture\r\n")
+            .await
+            .expect("send response and tunnel bytes");
+        stream.shutdown().await.expect("close upstream");
+    });
+    let mut client = TcpStream::connect(proxy)
+        .await
+        .expect("connect to local proxy");
+    client
+        .write_all(b"CONNECT example.invalid:22 HTTP/1.1\r\nHost: example.invalid:22\r\n\r\n")
+        .await
+        .expect("send CONNECT");
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.read_to_end(&mut response),
+    )
+    .await
+    .expect("proxy responds")
+    .expect("read response");
+    assert_eq!(
+        response,
+        b"HTTP/1.1 200 Connection Established\r\n\r\nSSH-2.0-fixture\r\n"
+    );
+    upstream_task.await.expect("upstream handled CONNECT");
+}
+
+#[tokio::test]
 async fn agent_threads_choose_their_own_routing_but_not_for_openai() {
     let (upstream, seen) = fake_upstream().await;
     let proxy = command_proxy(upstream).await;

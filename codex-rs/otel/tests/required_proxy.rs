@@ -132,9 +132,6 @@ fn http_signals_and_helpers_never_bypass_the_required_proxy() -> Result<(), Box<
         )?;
         assert!(!required.bypasses_host(&origin.ip().to_string()));
         codex_required_proxy::install(required, None)?;
-        if mode == "helper" {
-            codex_required_proxy::set_command_proxy(proxy)?;
-        }
         let mut builder = if std::env::var(RUNTIME)? == "multi" {
             let mut builder = tokio::runtime::Builder::new_multi_thread();
             builder.worker_threads(2);
@@ -144,12 +141,17 @@ fn http_signals_and_helpers_never_bypass_the_required_proxy() -> Result<(), Box<
         };
         let runtime = builder.enable_all().build()?;
         return runtime.block_on(async {
+            let gateway = codex_command_proxy::spawn(
+                tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+                codex_required_proxy::current,
+            )?;
+            codex_required_proxy::set_command_proxy(gateway)?;
             let exporter = |path| OtelExporter::OtlpHttp {
                 endpoint: format!("http://{origin}/v1/{path}"),
                 headers: HashMap::new(), protocol: OtelHttpProtocol::Binary, tls: None,
             };
             let helper = (mode == "helper").then(|| OtelHeadersHelper {
-                command: format!("test \"$HTTPS_PROXY\" = 'http://codex@{proxy}' && test \"$pip_proxy\" = 'http://codex@{proxy}' && printf '%s' '{{\"x-proxy-helper\":\"ok\"}}'"),
+                command: format!("test \"$HTTPS_PROXY\" = 'http://codex:codex-local@{gateway}' && test \"$pip_proxy\" = 'http://codex:codex-local@{gateway}' && printf '%s' '{{\"x-proxy-helper\":\"ok\"}}'"),
                 refresh_interval: Duration::from_secs(3600),
                 apply_to_logs: true, apply_to_traces: true, apply_to_metrics: true,
             });

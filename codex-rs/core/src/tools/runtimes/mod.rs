@@ -28,6 +28,7 @@ use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
 pub(crate) use codex_network_proxy::is_managed_proxy_env_var;
 pub(crate) use codex_network_proxy::strip_managed_proxy_env;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_required_proxy::COMMAND_PROXY_ENV;
 use codex_shell_command::shell_snapshot::SNAPSHOT_BROKERED_UNSET_ENV_PREFIX;
 use codex_shell_command::shell_snapshot::SNAPSHOT_BROKERED_VALUE_ENV_PREFIX;
 use codex_shell_command::shell_snapshot::build_brokered_credential_exports;
@@ -560,10 +561,20 @@ fn build_proxy_env_exports(env: &HashMap<String, String>) -> (String, String) {
             "if [ -n \"$__CODEX_SNAPSHOT_PROXY_ENV_SET\" ] || [ -n \"${{{key}+x}}\" ]; then\n{restores}\nfi"
         ),
     );
+    let command_keys = codex_required_proxy::command_proxy_env_keys().collect::<Vec<_>>();
+    let command_keys = command_keys.iter().map(String::as_str).collect::<Vec<_>>();
+    let (captures, restores) =
+        build_override_exports_for_keys("__CODEX_SNAPSHOT_COMMAND_PROXY", &command_keys);
+    let command_proxy_blocks = (
+        format!("{captures}\n__CODEX_SNAPSHOT_COMMAND_PROXY_SET=\"${{{COMMAND_PROXY_ENV}+x}}\""),
+        format!(
+            "if [ -n \"$__CODEX_SNAPSHOT_COMMAND_PROXY_SET\" ] || [ -n \"${{{COMMAND_PROXY_ENV}+x}}\" ]; then\n{restores}\nfi"
+        ),
+    );
     let git_blocks = build_codex_proxy_git_ssh_command_exports();
     (
-        join_shell_blocks([proxy_blocks.0, git_blocks.0]),
-        join_shell_blocks([proxy_blocks.1, git_blocks.1]),
+        join_shell_blocks([proxy_blocks.0, command_proxy_blocks.0, git_blocks.0]),
+        join_shell_blocks([proxy_blocks.1, command_proxy_blocks.1, git_blocks.1]),
     )
 }
 

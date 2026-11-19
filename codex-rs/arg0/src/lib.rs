@@ -624,7 +624,7 @@ mod tests {
             assert!(!super::dotenv_entry_allowed(key, ""));
             assert!(!super::dotenv_entry_allowed(
                 key,
-                "http://codex@127.0.0.1:1234"
+                "http://codex:codex-local@127.0.0.1:1234"
             ));
         }
         assert!(!super::dotenv_entry_allowed(

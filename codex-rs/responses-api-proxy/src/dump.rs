@@ -185,6 +185,7 @@ impl From<(&reqwest::header::HeaderName, &reqwest::header::HeaderValue)> for Hea
 
 fn should_redact_header(name: &str) -> bool {
     name.eq_ignore_ascii_case(AUTHORIZATION_HEADER_NAME)
+        || name.eq_ignore_ascii_case("proxy-authorization")
         || name.to_ascii_lowercase().contains("cookie")
 }
 

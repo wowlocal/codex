@@ -156,6 +156,7 @@ impl Policies {
         thread: &str,
         update: RoutingUpdate,
     ) -> Result<(), RequiredProxyError> {
+        let remove = DirectList::parse(&update.remove)?.entries();
         let mut threads = self.threads.lock().unwrap_or_else(PoisonError::into_inner);
         let policy = threads
             .entry(thread.to_string())
@@ -163,7 +164,7 @@ impl Policies {
         let mut entries: Vec<String> = policy
             .entries
             .iter()
-            .filter(|entry| !update.remove.contains(entry))
+            .filter(|entry| !remove.contains(entry))
             .cloned()
             .collect();
         for entry in update.add {

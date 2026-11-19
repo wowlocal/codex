@@ -10,7 +10,7 @@ possible. The current fork-specific behavior is:
 - startup `[env]` loading in the CLI binary; and
 - native TUI settings control compatible with BUSY Codex protocol version 1.
 
-The current base is upstream `rust-v0.170.0`; the fork version is `0.170.0-fork.1`.
+The current base is upstream `rust-v0.170.0`; the fork version is `0.170.0-fork.3`.
 The 2026-11-18 port retains the MCP Apps and BUSY adaptations from the 0.169 candidate
 and all three security/routing commits from the actual previous release,
 `0.163.0-fork.2` (`451a69980f`). It preserves upstream network policy, the Keychain
@@ -60,12 +60,14 @@ stored or the credential store cannot be read. `codex proxy`, `completion`, `std
 use a stored proxy the same way but start without one, so tests with temporary Codex homes run
 unchanged; `CODEX_FORK_REQUIRE_PROXY=1` gives them release behavior. Proxy variables in `[env]`
 stop startup with a pointer to `codex proxy import`, and inherited `*PROXY*` variables that carry
-credentials are removed before any child process starts.
+credentials are removed before any child process starts. The standalone `codex-app-server` uses
+the same credential-store startup, or adopts its parent Codex process's loopback gateway.
 
 **Live changes.** Running processes, including the app-server daemon, reload the proxy and
 `[proxy] direct` within about two seconds after `codex proxy set|clear|import` (which touch
-`$CODEX_HOME/.codex-fork-proxy-revision`) or an edit of `config.toml`. Existing HTTP clients ask
-for the current proxy per request, so no daemon restart is needed. A failed reload, including a
+`$CODEX_HOME/.codex-fork-proxy-revision`) or an edit of `config.toml`. HTTP clients open a fresh
+connection using the current direct list. Requests that need the upstream proxy go through the
+loopback gateway, which adds upstream credentials on its own connection. A failed reload, including a
 cleared credential, keeps the previous proxy; a running process never falls back to direct.
 
 **Agent commands and MCP servers.** Programs started by Codex never receive the upstream proxy.
@@ -73,7 +75,9 @@ Each Codex process with a required proxy serves a loopback command proxy
 (`codex-command-proxy`), and agent commands (`create_env`) and MCP stdio servers receive
 `HTTP(S)_PROXY`/`ALL_PROXY` pointing at it, `NO_PROXY` for loopback and
 `NODE_USE_ENV_PROXY=1`. The proxy username identifies the caller: `thread-<id>` for an agent
-thread's commands and `codex` for everything else. Per connection, OpenAI destinations always
+thread's commands and `codex` for everything else. The fixed public value `codex-local`
+lets Git and Python send this identity as Basic authentication to the loopback gateway.
+Per connection, OpenAI destinations always
 use the upstream proxy, loopback and `[proxy] direct` connect directly, package registries
 (npm, Yarn, PyPI, crates.io, Go, Homebrew, ghcr.io, RubyGems, Maven Central) connect directly
 for agent threads, and everything else uses the upstream proxy unless the calling thread
@@ -91,8 +95,8 @@ These requests go to `http://codex-proxy.invalid/routing` through the caller's c
 affect only that thread's commands until the process restarts, and are refused for OpenAI
 destinations and for callers without a thread identity, so MCP servers and Codex's own traffic
 keep their routing. Failures answer `502` with `X-Codex-Proxy: upstream-failed` or
-`direct-failed`. Inherited proxy URLs with a username but no password on loopback are command
-proxy identities, not credentials, and are kept. `codex proxy set|import` also install the
+`direct-failed`. The generated loopback identity URLs are preserved when starting nested
+Codex commands. `codex proxy set|import` also install the
 `codex-proxy-routing` skill into `$CODEX_HOME/skills`, which tells agents how to diagnose and
 adjust their routing and never to bypass the proxy. Hooks keep Codex's environment and receive
 no proxy. Under a sandboxed permission profile without network access, commands cannot reach
@@ -181,7 +185,7 @@ approval, prompt, tool, and account-credential APIs are not exposed here.
 ## Local release identity
 
 Local release builds should use a nonzero, fork-qualified SemVer version such as
-`0.170.0-fork.1`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
+`0.170.0-fork.3`. Shipping the workspace placeholder `0.0.0` can activate fixtures and
 announcements intended only for test builds.
 
 For a release-like macOS Apple Silicon artifact, use the upstream Cargo `release` profile for

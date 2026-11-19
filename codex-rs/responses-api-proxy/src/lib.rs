@@ -205,10 +205,11 @@ fn upstream_client_builder(
         .timeout(None::<Duration>);
     if codex_required_proxy::is_active() {
         let config = codex_http_client::build_rustls_client_config_with_custom_ca()?;
-        Ok(builder
-            .use_preconfigured_tls(config.as_ref().clone())
-            .no_proxy()
-            .proxy(codex_http_client::required_reqwest_proxy()))
+        Ok(
+            codex_http_client::configure_required_blocking_reqwest_proxy(
+                builder.use_preconfigured_tls(config.as_ref().clone()),
+            ),
+        )
     } else {
         Ok(builder)
     }
@@ -272,13 +273,15 @@ fn forward_request(
             .ok()
     });
 
-    // Build headers for upstream, forwarding everything from the incoming
-    // request except Authorization (we replace it below).
+    // Rebuild Authorization and Host for the upstream, and discard proxy-hop headers.
     let mut headers = HeaderMap::new();
     for header in req.headers() {
         let name_ascii = header.field.as_str();
         let lower = name_ascii.to_ascii_lowercase();
-        if lower.as_str() == "authorization" || lower.as_str() == "host" {
+        if matches!(
+            lower.as_str(),
+            "authorization" | "host" | "proxy-authorization" | "proxy-connection"
+        ) {
             continue;
         }
 

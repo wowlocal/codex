@@ -173,6 +173,7 @@ use futures::future::Either;
 use futures::future::RemoteHandle;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -1783,31 +1784,41 @@ impl AppServerSession {
         &mut self,
         params: ThreadSettingsUpdateParams,
     ) -> Result<bool> {
-        if !self.thread_settings_update_supported {
-            return Ok(false);
+        let result = self.start_thread_settings_update(params).await;
+        if matches!(result, Ok(false)) {
+            self.thread_settings_update_supported = false;
         }
-        let request_id = self.next_request_id();
-        match self
-            .request_handle
-            .request_typed::<ThreadSettingsUpdateResponse>(ClientRequest::ThreadSettingsUpdate {
-                request_id,
-                params,
-            })
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(TypedRequestError::Server { source, .. })
-                if is_method_unsupported(&source, THREAD_SETTINGS_UPDATE_METHOD) =>
+        result
+    }
+
+    /// Reserves the request ID before the TUI polls the response alongside its other events.
+    pub(crate) fn start_thread_settings_update(
+        &mut self,
+        params: ThreadSettingsUpdateParams,
+    ) -> impl Future<Output = Result<bool>> + use<> {
+        let request = self
+            .thread_settings_update_supported
+            .then(|| (self.request_handle(), self.next_request_id()));
+        async move {
+            let Some((handle, request_id)) = request else {
+                return Ok(false);
+            };
+            match handle
+                .request_typed::<ThreadSettingsUpdateResponse>(
+                    ClientRequest::ThreadSettingsUpdate { request_id, params },
+                )
+                .await
             {
-                // Older remote app servers can reject this experimental method as
-                // method-not-found, experimental-capability-gated, or an unknown
-                // request variant. Treat those as a session-level capability
-                // downgrade so local TUI setting changes stay best-effort instead
-                // of showing an error every time the user changes model, effort, or mode.
-                self.thread_settings_update_supported = false;
-                Ok(false)
+                Ok(_) => Ok(true),
+                // Older remote servers can reject this experimental method. The caller can
+                // cache that capability result for the session that issued the request.
+                Err(TypedRequestError::Server { source, .. })
+                    if is_method_unsupported(&source, THREAD_SETTINGS_UPDATE_METHOD) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(err).wrap_err("thread/settings/update failed in TUI"),
             }
-            Err(err) => Err(err).wrap_err("thread/settings/update failed in TUI"),
         }
     }
 

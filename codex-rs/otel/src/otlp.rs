@@ -98,8 +98,8 @@ pub(crate) fn build_grpc_tls_config(
 pub(crate) fn build_http_client(
     tls: &OtelTlsConfig,
     timeout_var: &str,
-) -> Result<reqwest::blocking::Client, Box<dyn Error>> {
-    if current_tokio_runtime_is_multi_thread() {
+) -> Result<crate::network_policy::BlockingHttpClient, Box<dyn Error>> {
+    let client = if current_tokio_runtime_is_multi_thread() {
         tokio::task::block_in_place(|| build_http_client_inner(tls, timeout_var))
     } else if tokio::runtime::Handle::try_current().is_ok() {
         let tls = tls.clone();
@@ -112,7 +112,8 @@ pub(crate) fn build_http_client(
         .map_err(config_error)
     } else {
         build_http_client_inner(tls, timeout_var)
-    }
+    }?;
+    Ok(crate::network_policy::BlockingHttpClient(client))
 }
 
 pub(crate) fn current_tokio_runtime_is_multi_thread() -> bool {
@@ -130,9 +131,7 @@ fn build_http_client_inner(
         reqwest::blocking::Client::builder().timeout(resolve_otlp_timeout(timeout_var));
     // reqwest discovers proxies from the environment, which never holds the required proxy.
     if codex_required_proxy::is_active() {
-        builder = builder
-            .no_proxy()
-            .proxy(codex_http_client::required_reqwest_proxy());
+        builder = codex_http_client::configure_required_blocking_reqwest_proxy(builder);
         if tls.ca_certificate.is_none()
             && tls.client_certificate.is_none()
             && tls.client_private_key.is_none()
